@@ -5,7 +5,7 @@ import {
 } from './store.js';
 import { LineEditor, attachLongPress, lpRecently } from './editor.js';
 import { RichText } from './rich.js';
-import { CONFIG, VERSION } from './config.js';
+import { CONFIG, VERSION, FIREBASE_VERSION } from './config.js';
 
 const app = document.getElementById('app');
 const $ = (s, r = document) => r.querySelector(s);
@@ -294,6 +294,23 @@ function syncLabel() {
   return [`● Offline · last sync ${ls}`, 'off'];
 }
 
+// Is this device ready to start without internet?
+async function offlineDiag() {
+  try {
+    if (!('serviceWorker' in navigator) || !window.caches) return 'not supported in this browser';
+    const ctl = !!navigator.serviceWorker.controller;
+    const keys = (await caches.keys()).filter(k => k.startsWith('dplus-'));
+    let fb = false, files = 0;
+    for (const k of keys) {
+      const c = await caches.open(k);
+      files += (await c.keys()).length;
+      if (await c.match(`https://www.gstatic.com/firebasejs/${FIREBASE_VERSION}/firebase-firestore.js`)) fb = true;
+    }
+    if (ctl && fb) return `ready ✓ (${keys.join(', ')})`;
+    return `not ready – worker ${ctl ? 'on' : 'off'}, cache ${keys.join(', ') || 'none'} (${files} files), Firebase ${fb ? 'saved' : 'missing'}`;
+  } catch (e) { return 'check failed: ' + e.message; }
+}
+
 function openSettings() {
   openSheet({
     cls: 'menu',
@@ -301,8 +318,10 @@ function openSettings() {
       <div class="m-row"><span>Sync</span><b>${esc(syncLabel()[0].slice(2))}</b></div>
       <button class="m-btn" data-a="install" type="button">Install on phone or laptop</button>
       <button class="m-btn danger" data-a="out" type="button">Sign out<small>Also removes the notes saved on this device</small></button>
+      <div class="m-row"><span>Offline</span><b class="diag">checking…</b></div>
       <div class="sh-s" style="margin-top:12px">Version ${VERSION}</div>`,
     mount(sh, api) {
+      offlineDiag().then(t => { const d = $('.diag', sh); if (d) d.textContent = t; });
       sh.addEventListener('click', ev => {
         const a = ev.target.closest('[data-a]')?.dataset.a; if (!a) return;
         api.close();
