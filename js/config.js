@@ -1,5 +1,5 @@
-export const VERSION = '1.1.0';
-export const FIREBASE_VERSION = '12.18.0';
+export const VERSION = '1.1.1';
+export const FIREBASE_VERSION = '12.18.0'; // keep in sync with FB in sw.js
 
 // Firebase web config. These values are not secret: access is protected by the login and the Firestore rules.
 export const CONFIG = {

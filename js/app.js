@@ -1105,17 +1105,31 @@ function showLogin(backend) {
   };
 }
 
+function registerSW() {
+  if (!('serviceWorker' in navigator) || location.protocol === 'file:') return;
+  const hadController = !!navigator.serviceWorker.controller;
+  navigator.serviceWorker.register('sw.js').catch(() => {});
+  // A new version was installed in the background: reload once, but never while typing.
+  let done = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!hadController || done) return;
+    const reload = () => { if (done) return; if (editingIn(document.body)) return setTimeout(reload, 3000); done = true; location.reload(); };
+    reload();
+  });
+}
+
 async function boot() {
-  if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js').catch(() => {});
+  registerSW();
   viewportFix();
   const demo = new URLSearchParams(location.search).has('demo');
   let backend;
   try {
-    backend = demo ? (await import('./demo.js')).demoBackend() : await (await import('./firebase.js')).firebaseBackend(CONFIG);
+    const load = demo ? import('./demo.js').then(m => m.demoBackend()) : import('./firebase.js').then(m => m.firebaseBackend(CONFIG));
+    backend = await Promise.race([load, new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 20000))]);
   } catch (err) {
     console.error(err);
     app.innerHTML = `<div class="login"><div class="logo">D+</div><h1>Can't start</h1>
-      <p class="muted">The app needs internet the very first time it opens on a device. Connect and try again.</p>
+      <p class="muted">The app needs internet the first time it opens on a device, so it can save itself for offline use. Connect and try again.</p>
       <button class="btn" type="button" id="rl">Try again</button></div>`;
     $('#rl').onclick = () => location.reload();
     return;

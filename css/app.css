@@ -20,7 +20,8 @@ svg { display: block; }
 
 #app { position: relative; height: var(--app-h, 100dvh); max-width: 640px; margin: 0 auto; display: flex; flex-direction: column; overflow: hidden; padding-top: var(--safe-t); }
 @media (min-width: 700px) { #app { border-left: 1px solid var(--ln); border-right: 1px solid var(--ln); } }
-.boot { margin: auto; font-family: var(--mono); color: var(--dim); }
+.boot { margin: auto; font-family: var(--mono); font-weight: 700; font-size: 20px; color: var(--ac); text-align: center; line-height: 1.6; }
+.boot small { font-size: 12px; font-weight: 500; color: var(--dim); }
 .page { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .scroll { overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: #3A3B37 transparent; }
 .scroll::-webkit-scrollbar { width: 4px; } .scroll::-webkit-scrollbar-thumb { background: #3A3B37; border-radius: 2px; }
