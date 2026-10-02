@@ -1,8 +1,8 @@
 // Offline support: app files network-first (so updates arrive on the next open),
 // Firebase SDK and fonts cache-first. Firestore traffic is not touched.
-const CACHE = 'dplus-v1';
+const CACHE = 'dplus-v2';
 const SHELL = ['./', 'index.html', 'css/app.css', 'js/app.js', 'js/util.js', 'js/store.js', 'js/editor.js',
-  'js/firebase.js', 'js/demo.js', 'js/config.js', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/apple-touch-icon.png'];
+  'js/rich.js', 'js/firebase.js', 'js/demo.js', 'js/config.js', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/apple-touch-icon.png'];
 const CDN = /^https:\/\/(www\.gstatic\.com\/firebasejs\/|fonts\.googleapis\.com\/|fonts\.gstatic\.com\/)/;
 
 self.addEventListener('install', e => {

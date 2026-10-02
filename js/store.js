@@ -5,13 +5,14 @@
 //   entries   { k, s, t, o, c?, imp?, x?, lit?, u }
 //             k = 'YYYY-MM-DD' (day/plan) or 'W2026-40' (week)
 //             s = 'day' (D+ notes and times) | 'plan' (calendar / week day boxes) | 'week' (week general)
-//             t = text, o = order, c = color key, imp = important, x = struck, lit = never treat as time
+//             t = text (highlights inline as ⟦c|text⟧), o = order, c = line color, x = struck, lit = never treat as time
+//             Red (line color or highlight) means important; imp is an older flag that still counts.
 //   days      { imp }                     id = 'YYYY-MM-DD'
 //   folders   { name, p, o }              p = parent folder id or null
 //   notes     { f, title, body, c?, imp? }
 //   recurring { t, wd: [0..6], from, c? } wd uses JS weekday numbers (0 = Sunday)
 
-import { parseTime, addDays, todayStr, parseYmd, weekMonday, isDateKey, isWeekKey } from './util.js';
+import { parseTime, addDays, todayStr, parseYmd, weekMonday, isDateKey, isWeekKey, hasRed } from './util.js';
 
 export const COLORS = { r: '#E5655C', o: '#D9A14B', b: '#5B8DEF', g: '#7FBF7A', p: '#A98BD8', x: '#6F7069' };
 export const COLOR_KEYS = ['r', 'o', 'b', 'g', 'p', 'x'];
@@ -123,7 +124,7 @@ export function timeItems(d) {
   for (const e of byKey(d)) {
     if (e.s === 'week' || e.lit) continue;
     const p = parseTime(e.t);
-    if (p) items.push({ ...p, id: e.id, e, c: e.c, x: e.x, imp: e.imp, src: e.s });
+    if (p) items.push({ ...p, id: e.id, e, c: e.c, x: e.x, src: e.s });
   }
   for (const r of recurringOn(d)) {
     const p = parseTime(r.t);
@@ -132,12 +133,14 @@ export function timeItems(d) {
   for (const e of byKey(addDays(d, -1))) {
     if (e.s === 'week' || e.lit) continue;
     const p = parseTime(e.t);
-    if (p && p.end && p.end < p.start) items.push({ ...p, id: e.id + '~', e, c: e.c, x: e.x, imp: e.imp, src: e.s, carry: true });
+    if (p && p.end && p.end < p.start) items.push({ ...p, id: e.id + '~', e, c: e.c, x: e.x, src: e.s, carry: true });
   }
   return items.sort((a, b) => (b.carry ? 1 : 0) - (a.carry ? 1 : 0) || a.start.localeCompare(b.start) || (a.end || '').localeCompare(b.end || ''));
 }
 
-export const dayImportant = d => !!S.days.get(d)?.imp || byKey(d).some(e => e.imp && e.s !== 'week');
+export const isImp = e => !!e && (!!e.imp || e.c === 'r' || hasRed(e.t));
+export const noteImp = n => !!n && (!!n.imp || n.c === 'r' || hasRed(n.title) || hasRed(n.body));
+export const dayImportant = d => !!S.days.get(d)?.imp || byKey(d).some(e => e.s !== 'week' && isImp(e));
 export const dayHasEntries = d => byKey(d).some(e => e.s !== 'week' && (e.t || '').trim());
 
 // Drop anything older than a year (archive retention).

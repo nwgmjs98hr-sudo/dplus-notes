@@ -41,15 +41,29 @@ export function weekMonday(key) {
   return ymd(d);
 }
 
+// Highlights are stored inline as ⟦c|text⟧ (c = color key). plain() removes them.
+export const MARK_RX = /⟦([a-z])\|([^⟧]*)⟧/g;
+export const plain = t => (t || '').replace(MARK_RX, '$2');
+export const hasRed = t => (t || '').includes('⟦r|');
 export const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 export const firstLine = t => (t || '').split('\n')[0];
+// Escaped HTML with highlights as <mark>.
+export function richHtml(t) {
+  t = t || ''; let out = '', last = 0;
+  for (const m of t.matchAll(MARK_RX)) {
+    out += esc(t.slice(last, m.index)) + `<mark class="hl hl-${m[1]}" data-c="${m[1]}">${esc(m[2])}</mark>`;
+    last = m.index + m[0].length;
+  }
+  return out + esc(t.slice(last));
+}
 
 // "0900 Text", "0900-1050 Text". A quote right after the digits (1000" or 1000“) means a number.
 const TIME_RX = /^(\d{2})(\d{2})(?:\s*[-–—]\s*(\d{2})(\d{2}))?\s+(\S.*)$/;
 export function parseTime(t) {
   if (!t) return null;
   const lines = t.split('\n');
-  const m = lines[0].match(TIME_RX);
+  let m = lines[0].match(TIME_RX);
+  if (!m && lines[0].includes('⟦')) m = plain(lines[0]).match(TIME_RX);
   if (!m) return null;
   const [, h1, m1, h2, m2, text] = m;
   if (+h1 > 23 || +m1 > 59) return null;

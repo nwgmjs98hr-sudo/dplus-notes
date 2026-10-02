@@ -15,7 +15,10 @@ calendar, folders for general notes and a 1-year archive. Works offline and sync
 | `01.02.26 Text` + Enter | asks: keep here / move to that day / both |
 | `- ` | bullet list, `[] ` checklist; Enter twice ends the list |
 
-Long press (or right click) on any line: color, important, strike through, move to D+n, repeat, delete.
+Select text while writing to highlight it in one of 6 colors (red = important). Red anywhere in a line or note marks it,
+and its day, as important.
+
+Long press (or right click) on any line: color of the whole line, strike through, move to D+n, repeat, delete.
 
 ## Setup
 1. Firestore rules: copy `firestore.rules` into Firebase → Firestore Database → Rules → Publish.

@@ -1,9 +1,10 @@
 import * as U from './util.js';
 import {
   S, start, subscribe, put, del, newId, entriesFor, isTime, timeItems, dayImportant, dayHasEntries,
-  recurringOn, nextO, stripId, isSynced, markSynced, signOut, COLORS, COLOR_KEYS, COLOR_NAMES,
+  recurringOn, nextO, stripId, isSynced, markSynced, signOut, isImp, noteImp, COLORS, COLOR_KEYS, COLOR_NAMES,
 } from './store.js';
-import { LineEditor, attachLongPress, lpRecently, autosize, listInput } from './editor.js';
+import { LineEditor, attachLongPress, lpRecently } from './editor.js';
+import { RichText } from './rich.js';
 import { CONFIG, VERSION } from './config.js';
 
 const app = document.getElementById('app');
@@ -16,11 +17,13 @@ const updaters = new Set();
 const inWin = d => { const x = U.diffDays(ui.today, d); return x >= 0 && x <= 4; };
 const colorOf = c => COLORS[c] || COLORS.x;
 const blurActive = () => { const a = document.activeElement; if (a && a !== document.body) a.blur(); };
-const editingIn = el => { const a = document.activeElement; return !!(a && el && el.contains(a) && /^(TEXTAREA|INPUT)$/.test(a.tagName)); };
+const editingIn = el => { const a = document.activeElement; return !!(a && el && el.contains(a) && (/^(TEXTAREA|INPUT)$/.test(a.tagName) || a.isContentEditable)); };
+const pl = t => U.plain(t);
+const rich = t => U.richHtml(t);
 const dayLabel = d => `${U.dowShort(d)} ${U.fmtDMY(d)}`;
 const keyLabel = e => U.isWeekKey(e.k) ? `Week ${+e.k.slice(6)}` : U.isDateKey(e.k) ? dayLabel(e.k) : '';
 const sortKeyOf = e => U.isWeekKey(e.k) ? U.weekMonday(e.k) + '~' : e.k || '';
-const noteTitle = n => (n.title || '').trim() || (n.body || '').split('\n').find(l => l.trim()) || 'New note';
+const noteTitle = n => (n.title || '').trim() || pl(n.body).split('\n').find(l => l.trim()) || 'New note';
 // Is a schedule item still relevant at 'now' (HHMM)? Overnight items run until midnight on their first day.
 const notOver = (i, now) => i.carry ? i.end > now : i.end ? (i.end > i.start ? i.end > now : true) : i.start >= now;
 const running = (i, now) => i.carry ? i.end > now : !!i.end && i.start <= now && (i.end > i.start ? now < i.end : true);
@@ -103,6 +106,7 @@ function confirmSheet(text, okLabel, onOk) {
   });
 }
 
+const colorHint = '<div class="m-hint">Red = important. To color only part of a text, select it while writing.</div>';
 const colorRow = cur => `<div class="m-colors">${COLOR_KEYS.map(k => `<button class="sw${cur === k ? ' on' : ''}" data-c="${k}" style="background:${COLORS[k]}" type="button" aria-label="${COLOR_NAMES[k]}"></button>`).join('')}<button class="sw none${!cur ? ' on' : ''}" data-c="" type="button" aria-label="No color"></button></div>`;
 
 /* ---------- long-press menu for any entry ---------- */
@@ -111,9 +115,9 @@ function entryMenu(e) {
   blurActive();
   openSheet({
     cls: 'menu',
-    html: `<div class="m-t">${esc(U.firstLine(e.t)) || '(empty line)'}</div>
-      ${colorRow(e.c)}
-      <button class="m-btn" data-a="imp" type="button">${e.imp ? 'Remove important' : 'Mark important'}</button>
+    html: `<div class="m-t">${esc(pl(U.firstLine(e.t))) || '(empty line)'}</div>
+      ${colorRow(e.c)}${colorHint}
+      ${e.imp ? '<button class="m-btn" data-a="imp" type="button">Remove old important mark</button>' : ''}
       <button class="m-btn" data-a="x" type="button">${e.x ? 'Remove strike-through' : 'Strike through'}</button>
       <div class="m-row"><span>Move to</span>${[0, 1, 2, 3, 4].map(n => `<button class="chip" data-mv="${n}" type="button">D+${n}</button>`).join('')}</div>
       <button class="m-btn" data-a="rep" type="button">Make repeating…</button>
@@ -122,14 +126,14 @@ function entryMenu(e) {
       sh.addEventListener('click', ev => {
         const b = ev.target.closest('button'); if (!b) return;
         const cur = S.entries.get(e.id); if (!cur) { api.close(); return; }
-        if (b.dataset.c !== undefined) { put('entries', e.id, { c: b.dataset.c || null }); api.close(); return; }
+        if (b.dataset.c !== undefined) { put('entries', e.id, { c: b.dataset.c || null, imp: false }); api.close(); return; }
         if (b.dataset.mv) {
           const n = +b.dataset.mv, d = U.addDays(ui.today, n), old = { k: cur.k, s: cur.s, o: cur.o };
           put('entries', e.id, { k: d, s: 'day', o: nextO(d, 'day') });
           api.close(); toast(`Moved to D+${n}`, () => put('entries', e.id, old)); return;
         }
         const a = b.dataset.a;
-        if (a === 'imp') put('entries', e.id, { imp: !cur.imp });
+        if (a === 'imp') put('entries', e.id, { imp: false });
         else if (a === 'x') put('entries', e.id, { x: !cur.x });
         else if (a === 'del') { const copy = stripId(cur); del('entries', e.id); toast('Deleted', () => put('entries', e.id, copy)); }
         else if (a === 'rep') { api.close(); openRecurring(null, cur); return; }
@@ -142,7 +146,7 @@ function entryMenu(e) {
 /* ---------- date found: keep / move / both ---------- */
 function datePrompt(entryId, found) {
   const e = S.entries.get(entryId); if (!e) return;
-  const text = found.rest || e.t;
+  const text = found.rest || pl(e.t);
   const many = found.dates.length > 1;
   openSheet({
     cls: 'menu',
@@ -174,15 +178,15 @@ function openRecurring(r, fromEntry) {
   openSheet({
     cls: 'menu',
     html: `<div class="sh-head"><div class="sh-t">${r ? 'Repeating entry' : 'Make repeating'}</div><button class="pill accent" type="button" data-save>Save</button></div>
-      <textarea class="ps-ta" rows="2" style="min-height:64px;margin-top:12px" placeholder="0630 PT"></textarea>
+      <div class="ps-slot" style="min-height:64px"></div>
       <div class="lab">Days</div>
       <div class="chips" data-wd>${WD.map(([n, l]) => `<button class="chip${wd.has(n) ? ' on' : ''}" data-d="${n}" type="button">${l}</button>`).join('')}</div>
       <div class="chips" style="margin-top:6px"><button class="chip" data-q="all" type="button">Every day</button><button class="chip" data-q="wk" type="button">Mon–Fri</button></div>
       <div class="lab">Color</div>${colorRow(c)}
       ${r ? '<button class="m-btn danger" data-del type="button">Delete repeating entry</button>' : ''}`,
     mount(sh, api) {
-      const ta = $('textarea', sh);
-      ta.value = r ? r.t : (fromEntry?.t || '');
+      const rt = new RichText({ value: r ? r.t : (fromEntry?.t || ''), placeholder: '0630 PT', cls: 'ps-ta' });
+      $('.ps-slot', sh).replaceWith(rt.el);
       const paint = () => $$('[data-d]', sh).forEach(b => b.classList.toggle('on', wd.has(+b.dataset.d)));
       sh.addEventListener('click', ev => {
         const b = ev.target.closest('button'); if (!b) return;
@@ -193,8 +197,8 @@ function openRecurring(r, fromEntry) {
           const copy = stripId(r); del('recurring', r.id); api.close();
           toast('Repeating entry deleted', () => put('recurring', r.id, copy));
         } else if (b.hasAttribute('data-save')) {
-          const t = ta.value.trim();
-          if (!t) { toast('Write something first'); return; }
+          const t = rt.value().trim();
+          if (!pl(t).trim()) { toast('Write something first'); return; }
           if (!wd.size) { toast('Pick at least one day'); return; }
           const days = [...wd].sort();
           if (r) put('recurring', r.id, { t, wd: days, c });
@@ -212,13 +216,14 @@ function openRecurring(r, fromEntry) {
 /* ---------- quick entry (+) ---------- */
 function openPlus() {
   blurActive();
-  let target = { t: 'd', n: ui.page === 'days' ? Math.max(0, Days.offset) : 0 }, explicit = false, rep = 'none';
+  let target = { t: 'd', n: ui.page === 'days' ? Math.max(0, Days.offset) : 0 }, explicit = false, rep = 'none', color = null;
   const wd = new Set();
   openSheet({
     cls: 'plus',
     html: `<div class="sh-head"><div class="sh-t">New entry</div><button class="pill accent" type="button" data-save>Save</button></div>
-      <textarea class="ps-ta" placeholder="0900 Text, a note, or - for a list" autocapitalize="sentences"></textarea>
-      <div class="lab">Where</div>
+      <div class="ps-slot"></div>
+      <div class="lab">Color of the whole entry <span class="muted">· or select text to color a part</span></div>${colorRow(null)}
+      <div class="lab" style="margin-top:2px">Where</div>
       <div class="chips" data-tg>
         ${[0, 1, 2, 3, 4].map(i => `<button class="chip" data-t="d" data-n="${i}" type="button">D+${i}</button>`).join('')}
         <button class="chip" data-t="w" data-n="1" type="button">W+1</button><button class="chip" data-t="w" data-n="2" type="button">W+2</button>
@@ -228,9 +233,10 @@ function openPlus() {
       <div class="chips" data-rp><button class="chip on" data-r="none" type="button">No</button><button class="chip" data-r="daily" type="button">Every day</button><button class="chip" data-r="wk" type="button">Mon–Fri</button><button class="chip" data-r="custom" type="button">Pick days</button></div>
       <div class="chips" data-wds hidden style="margin-top:6px">${WD.map(([n, l]) => `<button class="chip" data-d="${n}" type="button">${l}</button>`).join('')}</div>`,
     mount(sh, api) {
-      const ta = $('textarea', sh), dateIn = $('input[type=date]', sh);
-      listInput(ta, { after: () => autosize(ta) });
-      ta.focus();
+      const dateIn = $('input[type=date]', sh);
+      const rt = new RichText({ placeholder: '0900 Text, a note, or - for a list', cls: 'ps-ta' });
+      $('.ps-slot', sh).replaceWith(rt.el);
+      rt.focus();
       const paint = () => {
         $$('[data-tg] .chip', sh).forEach(b => b.classList.toggle('on', b.dataset.t === target.t && (b.dataset.t === 'date' || +b.dataset.n === target.n)));
         $$('[data-rp] .chip', sh).forEach(b => b.classList.toggle('on', b.dataset.r === rep));
@@ -244,10 +250,11 @@ function openPlus() {
         if (b.dataset.t) { target = { t: b.dataset.t, n: +b.dataset.n }; explicit = true; if (target.t === 'w') rep = 'none'; paint(); }
         else if (b.dataset.r) { rep = b.dataset.r; if (rep !== 'none' && target.t === 'w') target = { t: 'd', n: 0 }; paint(); }
         else if (b.dataset.d !== undefined) { const n = +b.dataset.d; wd.has(n) ? wd.delete(n) : wd.add(n); paint(); }
+        else if (b.dataset.c !== undefined) { color = b.dataset.c || null; $$('.sw', sh).forEach(x => x.classList.toggle('on', x === b)); }
         else if (b.hasAttribute('data-save')) save();
       });
       function save() {
-        const lines = ta.value.split('\n').map(l => l.replace(/\s+$/, '')).filter(l => l.trim());
+        const lines = rt.lines().map(l => l.replace(/\s+$/, '')).filter(l => pl(l).trim());
         if (!lines.length) { api.close(); return; }
         if (target.t === 'date' && !dateIn.value) { toast('Pick a date first'); return; }
         const baseDay = target.t === 'date' ? dateIn.value : target.t === 'd' ? U.addDays(ui.today, target.n) : null;
@@ -256,16 +263,16 @@ function openPlus() {
         if (rep !== 'none') {
           const days = rep === 'daily' ? [0, 1, 2, 3, 4, 5, 6] : rep === 'wk' ? [1, 2, 3, 4, 5] : [...wd].sort();
           if (!days.length) { toast('Pick at least one day'); return; }
-          lines.forEach(l => made.push(['recurring', put('recurring', newId(), { t: l, wd: days, from: baseDay || ui.today })]));
+          lines.forEach(l => made.push(['recurring', put('recurring', newId(), { t: l, wd: days, c: color, from: baseDay || ui.today })]));
           msg = 'Repeating entry saved';
         } else {
           lines.forEach((l, i) => {
-            const f = !explicit && U.extractDates(l);
-            if (f) { f.dates.forEach(d => { const s = inWin(d) ? 'day' : 'plan'; made.push(['entries', put('entries', newId(), { k: d, s, t: f.rest || l, o: nextO(d, s) })]); }); return; }
+            const f = !explicit && U.extractDates(pl(l));
+            if (f) { f.dates.forEach(d => { const s = inWin(d) ? 'day' : 'plan'; made.push(['entries', put('entries', newId(), { k: d, s, t: f.rest || l, o: nextO(d, s), c: color })]); }); return; }
             let k, s;
             if (target.t === 'w') { k = U.weekKey(U.addDays(U.monday(ui.today), 7 * target.n)); s = 'week'; }
             else { k = baseDay; s = target.t === 'd' || inWin(k) ? 'day' : 'plan'; }
-            made.push(['entries', put('entries', newId(), { k, s, t: l, o: nextO(k, s) + i })]);
+            made.push(['entries', put('entries', newId(), { k, s, t: l, o: nextO(k, s) + i, c: color })]);
           });
           msg = target.t === 'w' ? `Saved to W+${target.n}` : target.t === 'd' ? `Saved to D+${target.n}` : `Saved to ${dayLabel(baseDay)}`;
         }
@@ -370,8 +377,8 @@ function openDaySheet(d) {
       const impB = $('[data-imp]', sh);
       const paint = () => {
         impB.classList.toggle('red', !!S.days.get(d)?.imp);
-        const own = entriesFor(d, 'day').filter(e => e.t.trim());
-        $('.ds-day', sh).innerHTML = own.length ? `<div class="lab">Also in the D+ slot</div>` + own.map(e => `<div class="ds-line"><i class="c-dot" style="background:${colorOf(e.c)}"></i>${esc(U.firstLine(e.t))}</div>`).join('') : '';
+        const own = entriesFor(d, 'day').filter(e => pl(e.t).trim());
+        $('.ds-day', sh).innerHTML = own.length ? `<div class="lab">Also in the D+ slot</div>` + own.map(e => `<div class="ds-line"><i class="c-dot" style="background:${colorOf(e.c)}"></i><span>${rich(U.firstLine(e.t))}</span></div>`).join('') : '';
       };
       paint();
       impB.onclick = () => { put('days', d, { imp: !S.days.get(d)?.imp }); paint(); };
@@ -397,15 +404,16 @@ function openSearch() {
     if (!q) { res.innerHTML = '<div class="empty">Search days, calendar, weeks, notes and the archive.</div>'; return; }
     const hits = [];
     for (const e of S.entries.values()) {
-      if (!e.t?.trim()) continue;
+      const pt = pl(e.t);
+      if (!pt.trim()) continue;
       const lab = keyLabel(e);
-      if (e.t.toLowerCase().includes(q) || lab.toLowerCase().includes(q)) hits.push({ e, lab, sort: sortKeyOf(e) });
+      if (pt.toLowerCase().includes(q) || lab.toLowerCase().includes(q)) hits.push({ e, lab, sort: sortKeyOf(e) });
     }
     hits.sort((a, b) => b.sort.localeCompare(a.sort));
-    const notes = [...S.notes.values()].filter(n => `${n.title || ''}\n${n.body || ''}`.toLowerCase().includes(q));
+    const notes = [...S.notes.values()].filter(n => `${pl(n.title)}\n${pl(n.body)}`.toLowerCase().includes(q));
     const folders = [...S.folders.values()].filter(f => (f.name || '').toLowerCase().includes(q));
     let h = '';
-    if (hits.length) h += '<div class="ar-day">Days and calendar</div>' + hits.slice(0, 80).map(x => `<button class="hit" data-e="${x.e.id}" type="button"><span class="up-d">${esc(x.lab)}</span><span class="hit-x">${esc(U.firstLine(x.e.t))}</span></button>`).join('');
+    if (hits.length) h += '<div class="ar-day">Days and calendar</div>' + hits.slice(0, 80).map(x => `<button class="hit" data-e="${x.e.id}" type="button"><span class="up-d">${esc(x.lab)}</span><span class="hit-x">${rich(U.firstLine(x.e.t))}</span></button>`).join('');
     if (notes.length || folders.length) h += '<div class="ar-day">Notes</div>'
       + folders.map(f => `<button class="hit" data-f="${f.id}" type="button"><span class="hit-i">${I.folder}</span><span class="hit-x">${esc(f.name)}</span></button>`).join('')
       + notes.slice(0, 60).map(n => `<button class="hit" data-n="${n.id}" type="button"><i class="c-dot" style="background:${colorOf(n.c)}"></i><span class="hit-x">${esc(noteTitle(n))}</span></button>`).join('');
@@ -427,12 +435,12 @@ function gotoEntry(e) {
   if (!e) return;
   if (U.isWeekKey(e.k)) {
     const n = U.diffDays(U.monday(ui.today), U.weekMonday(e.k)) / 7;
-    if (n >= 0 && n <= 2) { go('days'); openWeek(n); } else go('archive', U.firstLine(e.t).slice(0, 40));
+    if (n >= 0 && n <= 2) { go('days'); openWeek(n); } else go('archive', pl(U.firstLine(e.t)).slice(0, 40));
     return;
   }
   const diff = U.diffDays(ui.today, e.k);
   if (diff >= -1 && diff <= 4) { Days.offset = diff; go('days'); }
-  else if (diff < -1) go('archive', U.firstLine(e.t).slice(0, 40));
+  else if (diff < -1) go('archive', pl(U.firstLine(e.t)).slice(0, 40));
   else { Cal.month = e.k.slice(0, 7); go('calendar'); openDaySheet(e.k); }
 }
 
@@ -549,8 +557,8 @@ const Days = {
     if (this.offset === 0) for (const i of [1, 2]) {
       const d = U.addDays(ui.today, i);
       if (!dayImportant(d)) continue;
-      const imp = entriesFor(d).find(e => e.imp && e.s !== 'week') || entriesFor(d).find(e => e.s !== 'week' && e.t.trim());
-      const txt = imp ? (U.parseTime(imp.t)?.text || U.firstLine(imp.t)) : 'Important day';
+      const imp = entriesFor(d).find(e => e.s !== 'week' && isImp(e)) || entriesFor(d).find(e => e.s !== 'week' && pl(e.t).trim());
+      const txt = imp ? pl(U.parseTime(imp.t)?.text || U.firstLine(imp.t)) : 'Important day';
       h += `<button class="banner imp" data-act="goto" data-o="${i}" type="button"><span><b>${i === 1 ? 'Tomorrow' : U.dowShort(d)}:</b> ${esc(txt)} · important</span></button>`;
     }
     $('#banners').innerHTML = h;
@@ -578,7 +586,7 @@ const Days = {
       if (!it) { it = timeItems(U.addDays(this.date, 1)).find(i => !i.carry); if (it) lab = 'Tomorrow'; }
     } else it = items[0];
     $('#next').innerHTML = it
-      ? `<div class="next"><span class="l">${lab}</span><span class="t">${it.start}</span><span class="x">${esc(it.text)}</span><span class="in">${extra}</span></div>`
+      ? `<div class="next"><span class="l">${lab}</span><span class="t">${it.start}</span><span class="x">${rich(it.text)}</span><span class="in">${extra}</span></div>`
       : `<div class="next quiet"><span class="l">${this.offset === 0 ? 'Next' : 'First'}</span><span class="x muted">Nothing planned</span></div>`;
   },
 
@@ -594,10 +602,10 @@ const Days = {
         else if (i === cur) st = 'cur';
       }
       const tt = it.carry ? `→${it.end}` : it.end ? `${it.start}–${it.end}` : it.start;
-      const tags = (it.carry ? '<span class="tag">overnight</span>' : '') + (it.src === 'plan' ? '<span class="tag">planned</span>' : '') + (it.rec ? `<span class="tag ic">${I.repeat}</span>` : '') + (it.imp ? '<b class="le-imp">!</b>' : '');
-      const sub = it.rest?.length ? `<div class="sr-sub">${it.rest.map(esc).join('<br>')}</div>` : '';
+      const tags = (it.carry ? '<span class="tag">overnight</span>' : '') + (it.src === 'plan' ? '<span class="tag">planned</span>' : '') + (it.rec ? `<span class="tag ic">${I.repeat}</span>` : '') + (it.e?.imp ? '<b class="le-imp">!</b>' : '');
+      const sub = it.rest?.length ? `<div class="sr-sub">${it.rest.map(rich).join('<br>')}</div>` : '';
       const dot = st === 'past' ? '' : `background:${colorOf(it.c)}`;
-      return `<div class="sr ${st}${it.x ? ' x' : ''}" data-sid="${esc(it.id)}"><span class="sr-dot" style="${dot}"></span><span class="sr-t">${tt}</span><div class="sr-x"><div><span class="sr-txt">${esc(it.text)}</span>${tags}</div>${sub}</div></div>`;
+      return `<div class="sr ${st}${it.x ? ' x' : ''}" data-sid="${esc(it.id)}"><span class="sr-dot" style="${dot}"></span><span class="sr-t">${tt}</span><div class="sr-x"><div><span class="sr-txt">${rich(it.text)}</span>${tags}</div>${sub}</div></div>`;
     });
     rows.push(`<div class="sr add" data-sid="new"><span class="sr-dot"></span><span class="sr-t"></span><div class="sr-x">+ Add time entry</div></div>`);
     $('#sched').innerHTML = `<div class="sr-wrap"><div class="sr-line"></div>${rows.join('')}</div>`;
@@ -616,24 +624,30 @@ const Days = {
   editRow(row, entry) {
     this.schedEdit = true;
     const d = this.date;
-    const ta = mk('textarea', 'sr-edit');
-    ta.rows = 1; ta.value = entry ? entry.t : ''; ta.placeholder = '1600 Text';
-    ta.setAttribute('autocapitalize', 'sentences'); ta.setAttribute('enterkeyhint', 'done');
+    let done = false, finalV = null;
+    const rt = new RichText({
+      value: entry ? entry.t : '', placeholder: '1600 Text', cls: 'sr-edit',
+      // Enter on a normal line saves; inside a list it keeps the list going
+      onLine: (line, i, isList) => {
+        if (isList) return;
+        const L = rt.lines(); L.splice(i + 1, 1);
+        finalV = L.join('\n'); rt.el.blur();
+      },
+      onBlur: () => commit(),
+    });
     row.classList.add('editing');
     $('.sr-t', row)?.remove();
-    $('.sr-x', row).replaceWith(ta);
-    autosize(ta); ta.focus();
-    try { ta.setSelectionRange(ta.value.length, ta.value.length); } catch {}
-    let done = false;
+    $('.sr-x', row).replaceWith(rt.el);
+    rt.focus(); rt.caretToLineEnd(-1);
     const commit = () => {
       if (done) return; done = true; this.schedEdit = false;
-      const v = ta.value.replace(/\s+$/, '');
+      const v = (finalV ?? rt.value()).replace(/\s+$/, '');
       if (!entry) {
-        if (v.trim()) {
+        if (pl(v).trim()) {
           if (U.parseTime(v)) put('entries', newId(), { k: d, s: 'day', t: v, o: 0 });
           else { put('entries', newId(), { k: d, s: 'day', t: v, o: nextO(d, 'day') }); toast('No time at the start – added to notes'); }
         }
-      } else if (!v.trim()) {
+      } else if (!pl(v).trim()) {
         const copy = stripId(entry); del('entries', entry.id); toast('Entry deleted', () => put('entries', entry.id, copy));
       } else if (v !== entry.t) {
         const old = entry.t;
@@ -642,22 +656,17 @@ const Days = {
       }
       this.update();
     };
-    listInput(ta, {
-      onLine: (line, start, c, set) => { const v = ta.value; set(v.slice(0, c - 1) + v.slice(c), c - 1); ta.blur(); },
-      after: () => autosize(ta),
-    });
-    ta.addEventListener('keydown', e => { if (e.key === 'Escape') { done = true; this.schedEdit = false; this.renderSched(); } });
-    ta.addEventListener('blur', commit);
+    rt.el.addEventListener('keydown', e => { if (e.key === 'Escape') { done = true; this.schedEdit = false; this.renderSched(); } });
   },
 
   renderRec() {
     const recs = recurringOn(this.date).filter(r => !U.parseTime(r.t));
-    $('#recBlk').innerHTML = recs.length ? '<div class="blk-lab">Repeating</div>' + recs.map(r => `<button class="rec-line" data-rid="${r.id}" type="button"><i class="c-dot" style="background:${colorOf(r.c)}"></i><span>${esc(r.t)}</span><span class="tag ic">${I.repeat}</span></button>`).join('') : '';
+    $('#recBlk').innerHTML = recs.length ? '<div class="blk-lab">Repeating</div>' + recs.map(r => `<button class="rec-line" data-rid="${r.id}" type="button"><i class="c-dot" style="background:${colorOf(r.c)}"></i><span>${rich(r.t)}</span><span class="tag ic">${I.repeat}</span></button>`).join('') : '';
   },
 
   renderWeekbar() {
-    const L = entriesFor(U.weekKey(ui.today), 'week').filter(e => e.t.trim() && !e.x);
-    $('#wbS').textContent = L.length ? U.firstLine(L[0].t) + (L.length > 1 ? ` · +${L.length - 1}` : '') : 'Nothing planned';
+    const L = entriesFor(U.weekKey(ui.today), 'week').filter(e => pl(e.t).trim() && !e.x);
+    $('#wbS').textContent = L.length ? pl(U.firstLine(L[0].t)) + (L.length > 1 ? ` · +${L.length - 1}` : '') : 'Nothing planned';
   },
 
   tickMinute() { if (!this.el) return; this.renderHeader(); this.renderNext(); this.renderSched(); },
@@ -705,7 +714,7 @@ const Cal = {
     $('#calG').innerHTML = h;
     const days = new Map();
     for (const e of S.entries.values()) {
-      if (!U.isDateKey(e.k) || e.k < ui.today || e.s === 'week' || !e.t.trim()) continue;
+      if (!U.isDateKey(e.k) || e.k < ui.today || e.s === 'week' || !pl(e.t).trim()) continue;
       if (!days.has(e.k)) days.set(e.k, []);
       days.get(e.k).push(e);
     }
@@ -714,7 +723,7 @@ const Cal = {
     $('#calUp').innerHTML = keys.length ? keys.map(k => {
       const L = days.get(k).sort((a, b) => (a.o || 0) - (b.o || 0));
       const timed = L.map(e => U.parseTime(e.t)).filter(Boolean).sort((a, b) => a.start.localeCompare(b.start));
-      const first = timed[0] ? `${timed[0].start} ${timed[0].text}` : L[0] ? U.firstLine(L[0].t) : 'Important day';
+      const first = pl(timed[0] ? `${timed[0].start} ${timed[0].text}` : L[0] ? U.firstLine(L[0].t) : 'Important day');
       const imp = dayImportant(k);
       return `<button class="up-row" data-d="${k}" type="button"><span class="up-d${imp ? ' red' : ''}">${U.dowShort(k)} ${U.fmtDM(k)}</span><span class="up-x">${esc(first)}${L.length > 1 ? ` <span class="muted">+${L.length - 1}</span>` : ''}</span>${imp ? '<i class="c-dot" style="background:var(--red)"></i>' : ''}</button>`;
     }).join('') : '<div class="empty">Nothing coming up. Tap a day to plan.</div>';
@@ -761,7 +770,7 @@ const Notes = {
     const kids = p => folders.filter(f => (f.p || null) === p).sort((a, b) => (a.o || 0) - (b.o || 0));
     const inF = f => notes.filter(n => (n.f || null) === f && S.folders.has(n.f || '') === !!f).sort((a, b) => (b.u || 0) - (a.u || 0));
     const count = f => inF(f.id).length + kids(f.id).reduce((a, k) => a + count(k), 0);
-    const noteRow = (n, depth) => `<button class="nr" data-nid="${n.id}" type="button" style="padding-left:${12 + depth * 20}px"><i class="c-dot" style="background:${n.c ? COLORS[n.c] : '#3A3B37'}"></i><span class="nr-t">${esc(noteTitle(n))}</span>${n.imp ? '<b class="le-imp">!</b>' : ''}</button>`;
+    const noteRow = (n, depth) => `<button class="nr" data-nid="${n.id}" type="button" style="padding-left:${12 + depth * 20}px"><i class="c-dot" style="background:${n.c ? COLORS[n.c] : noteImp(n) ? COLORS.r : '#3A3B37'}"></i><span class="nr-t">${esc(noteTitle(n))}</span>${noteImp(n) ? '<b class="le-imp">!</b>' : ''}</button>`;
     let h = '';
     const walk = (p, depth) => {
       for (const f of kids(p)) {
@@ -815,17 +824,17 @@ function noteMenu(n, onGone) {
   if (!n) return;
   openSheet({
     cls: 'menu',
-    html: `<div class="m-t">${esc(noteTitle(n))}</div>${colorRow(n.c)}
-      <button class="m-btn" data-a="imp" type="button">${n.imp ? 'Remove important' : 'Mark important'}</button>
+    html: `<div class="m-t">${esc(noteTitle(n))}</div>${colorRow(n.c)}${colorHint}
+      ${n.imp ? '<button class="m-btn" data-a="imp" type="button">Remove old important mark</button>' : ''}
       <button class="m-btn" data-a="mv" type="button">Move to folder…</button>
       <button class="m-btn danger" data-a="del" type="button">Delete note</button>`,
     mount(sh, api) {
       sh.addEventListener('click', ev => {
         const b = ev.target.closest('button'); if (!b) return;
-        if (b.dataset.c !== undefined) { put('notes', n.id, { c: b.dataset.c || null }); api.close(); return; }
+        if (b.dataset.c !== undefined) { put('notes', n.id, { c: b.dataset.c || null, imp: false }); api.close(); return; }
         const a = b.dataset.a; if (!a) return;
         api.close();
-        if (a === 'imp') put('notes', n.id, { imp: !S.notes.get(n.id)?.imp });
+        if (a === 'imp') put('notes', n.id, { imp: false });
         if (a === 'mv') folderPicker('Move note to', null, f => put('notes', n.id, { f }));
         if (a === 'del') { const copy = stripId(S.notes.get(n.id) || n); del('notes', n.id); onGone?.(); toast('Note deleted', () => put('notes', n.id, copy)); }
       });
@@ -857,34 +866,38 @@ function openNote(id, isNew) {
   const v = mk('div', 'full ne');
   const path = []; let f = S.folders.get(n.f); while (f) { path.unshift(f.name); f = S.folders.get(f.p); }
   v.innerHTML = `<div class="ne-head"><button class="back" type="button">${I.left}<span>Notes</span></button><span class="ne-f">${esc(path.join(' / '))}</span><span class="clock-s mini-clock">${U.nowHHMM()}</span><button class="icon-btn" type="button" data-more aria-label="More">${I.more}</button></div>
-    <input class="ne-title" placeholder="Title" autocapitalize="sentences"><textarea class="ne-body scroll" placeholder="Write…" autocapitalize="sentences"></textarea>`;
-  const ti = $('.ne-title', v), bo = $('.ne-body', v);
-  ti.value = n.title || ''; bo.value = n.body || '';
+    <input class="ne-title" placeholder="Title" autocapitalize="sentences"><div class="ne-slot"></div>`;
+  const ti = $('.ne-title', v);
+  ti.value = n.title || '';
+  const bo = new RichText({
+    value: n.body || '', placeholder: 'Write…', cls: 'ne-body scroll',
+    onLine: (line, i, isList) => {
+      const p = pl(line), found = U.extractDates(isList ? p.slice(2) : p); if (!found) return;
+      save();
+      noteDatePrompt(id, line, found, bo);
+    },
+    onInput: () => later(),
+    onBlur: () => save(),
+  });
+  $('.ne-slot', v).replaceWith(bo.el);
   $('#layer').append(v);
   v.getBoundingClientRect(); v.classList.add('in');
   let t = null;
   const save = () => {
     clearTimeout(t); t = null;
     const cur = S.notes.get(id); if (!cur) return;
-    if ((cur.title || '') !== ti.value || (cur.body || '') !== bo.value) put('notes', id, { title: ti.value, body: bo.value });
+    const body = bo.value();
+    if ((cur.title || '') !== ti.value || (cur.body || '') !== body) put('notes', id, { title: ti.value, body });
   };
   const later = () => { clearTimeout(t); t = setTimeout(save, 600); };
   ti.oninput = later;
-  ti.onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); bo.focus(); } };
-  listInput(bo, {
-    onLine: (line, start, c, set, isList) => {
-      const found = U.extractDates(isList ? line.slice(2) : line); if (!found) return;
-      save();
-      noteDatePrompt(id, line, found, bo);
-    },
-    after: later,
-  });
-  bo.addEventListener('blur', save); ti.addEventListener('blur', save);
+  ti.onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); bo.focus(); bo.caretToLineEnd(-1); } };
+  ti.addEventListener('blur', save);
   const upd = () => {
     const cur = S.notes.get(id);
     if (!cur) { close(true); return; }
     if (document.activeElement !== ti && !t && (cur.title || '') !== ti.value) ti.value = cur.title || '';
-    if (document.activeElement !== bo && !t && (cur.body || '') !== bo.value) bo.value = cur.body || '';
+    if (document.activeElement !== bo.el && !t && (cur.body || '') !== bo.value()) bo.setValue(cur.body || '');
   };
   updaters.add(upd);
   let closed = false;
@@ -892,11 +905,11 @@ function openNote(id, isNew) {
     if (closed) return; closed = true;
     updaters.delete(upd);
     if (!gone) {
-      const trimmed = bo.value.replace(/(\n(• |☐ |☑ )?[ \t]*)+$/, '');
-      if (trimmed !== bo.value) bo.value = trimmed;
+      const val = bo.value(), trimmed = val.replace(/(\n(• |☐ |☑ )?[ \t]*)+$/, '');
+      if (trimmed !== val) bo.setValue(trimmed);
       save();
       const cur = S.notes.get(id);
-      if (cur && !(cur.title || '').trim() && !(cur.body || '').trim()) del('notes', id);
+      if (cur && !(cur.title || '').trim() && !pl(cur.body).trim()) del('notes', id);
     }
     blurActive();
     v.classList.remove('in'); setTimeout(() => v.remove(), 300);
@@ -907,7 +920,7 @@ function openNote(id, isNew) {
 }
 
 function noteDatePrompt(id, line, found, bo) {
-  const text = found.rest || line.replace(/^(• |☐ |☑ )/, '');
+  const text = found.rest || pl(line).replace(/^(• |☐ |☑ )/, '');
   openSheet({
     cls: 'menu',
     html: `<div class="m-t">Date found: ${found.dates.map(dayLabel).join(', ')}</div><div class="m-q">“${esc(text)}”</div>
@@ -924,12 +937,12 @@ function noteDatePrompt(id, line, found, bo) {
         if (a === 'move') {
           const cur = S.notes.get(id); oldBody = cur?.body || '';
           const lines = oldBody.split('\n'); const i = lines.indexOf(line);
-          if (i >= 0) { lines.splice(i, 1); const nb = lines.join('\n'); put('notes', id, { body: nb }); if (bo.isConnected) bo.value = nb; }
+          if (i >= 0) { lines.splice(i, 1); const nb = lines.join('\n'); put('notes', id, { body: nb }); if (bo.el.isConnected) bo.setValue(nb); }
         }
         const where = found.dates.length > 1 ? `${found.dates.length} days` : dayLabel(found.dates[0]);
         toast(a === 'move' ? `Moved to ${where}` : `Copied to ${where}`, () => {
           made.forEach(x => del('entries', x));
-          if (oldBody != null) { put('notes', id, { body: oldBody }); if (bo.isConnected) bo.value = oldBody; }
+          if (oldBody != null) { put('notes', id, { body: oldBody }); if (bo.el.isConnected) bo.setValue(oldBody); }
         });
       });
     },
@@ -969,10 +982,11 @@ const Archive = {
     const t = ui.today, curW = U.weekKey(t), q = this.q.trim().toLowerCase();
     const groups = new Map();
     for (const e of S.entries.values()) {
-      if (!(e.t || '').trim()) continue;
+      const pt = pl(e.t);
+      if (!pt.trim()) continue;
       const past = U.isWeekKey(e.k) ? e.k < curW : U.isDateKey(e.k) && e.k < t;
       if (!past) continue;
-      if (q && !e.t.toLowerCase().includes(q) && !keyLabel(e).toLowerCase().includes(q)) continue;
+      if (q && !pt.toLowerCase().includes(q) && !keyLabel(e).toLowerCase().includes(q)) continue;
       if (!groups.has(e.k)) groups.set(e.k, []);
       groups.get(e.k).push(e);
     }
@@ -988,7 +1002,7 @@ const Archive = {
         const act = this.openId === e.id
           ? `<span class="mv-row">${[1, 2, 3].map(n => `<button class="mv go" data-id="${e.id}" data-to="${n}" type="button">D+${n}</button>`).join('')}</span>`
           : `<button class="mv" data-mv="${e.id}" type="button">Move</button>`;
-        h += `<div class="ar-row" data-id="${e.id}"><i class="c-dot" style="background:${colorOf(e.c)}"></i><span class="ar-t">${p ? p.start : ''}</span><span class="ar-x${e.x ? ' x' : ''}">${esc(p ? p.text : U.firstLine(e.t))}${e.imp ? ' <b class="le-imp">!</b>' : ''}</span>${act}</div>`;
+        h += `<div class="ar-row" data-id="${e.id}"><i class="c-dot" style="background:${colorOf(e.c)}"></i><span class="ar-t">${p ? p.start : ''}</span><span class="ar-x${e.x ? ' x' : ''}">${rich(p ? p.text : U.firstLine(e.t))}${e.imp ? ' <b class="le-imp">!</b>' : ''}</span>${act}</div>`;
       }
     }
     if (rows > 400) h += '<div class="empty">Showing the latest entries. Search to find older ones.</div>';

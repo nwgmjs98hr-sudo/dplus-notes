@@ -1,8 +1,9 @@
-// Line editor: shows a list of entries (one per line) and turns into a plain textarea when tapped.
-// On save the textarea lines are matched back to entries, so every line stays its own synced document.
+// Line editor: shows a list of entries (one per line) and turns into a rich text field when tapped.
+// On save the lines are matched back to entries, so every line stays its own synced document.
 
 import { S, put, del, newId, entriesFor, COLORS } from './store.js';
-import { parseTime, extractDates, esc } from './util.js';
+import { parseTime, extractDates, esc, richHtml, plain } from './util.js';
+import { RichText } from './rich.js';
 
 let lastLP = 0;
 export const lpRecently = () => Date.now() - lastLP < 700;
@@ -34,43 +35,12 @@ export function attachLongPress(root, selector, cb) {
   });
 }
 
-// Shared typing behaviour for textareas: "- " → "• ", "[] " → "☐ ",
-// Enter continues a list, Enter on an empty list item ends the list.
-// onLine(line, start, caret, set, isList) is called when Enter completes a line.
-export function listInput(ta, { onLine, after } = {}) {
-  let prev = ta.value;
-  ta.addEventListener('input', ev => {
-    let v = ta.value;
-    const set = (nv, c) => { ta.value = nv; try { ta.setSelectionRange(c, c); } catch {} v = nv; };
-    let caret = ta.selectionStart;
-    const ls = v.lastIndexOf('\n', caret - 1) + 1;
-    const head = v.slice(ls, caret);
-    if (head === '- ' || head === '* ') set(v.slice(0, ls) + '• ' + v.slice(caret), ls + 2);
-    else if (head === '[] ' || head === '[ ] ') set(v.slice(0, ls) + '☐ ' + v.slice(caret), ls + 2);
-    caret = ta.selectionStart;
-    const broke = caret > 0 && v[caret - 1] === '\n' &&
-      (ev.inputType === 'insertLineBreak' || ev.inputType === 'insertParagraph' || (!ev.inputType && v.length === prev.length + 1));
-    if (broke) {
-      const end = caret - 1;
-      const start = end === 0 ? 0 : v.lastIndexOf('\n', end - 1) + 1;
-      const line = v.slice(start, end);
-      const m = line.match(/^(• |☐ |☑ )(.*)$/);
-      if (m) {
-        if (!m[2].trim()) set(v.slice(0, start) + v.slice(caret), start);
-        else { const p = m[1] === '☑ ' ? '☐ ' : m[1]; set(v.slice(0, caret) + p + v.slice(caret), caret + p.length); onLine?.(line, start, caret, set, true); }
-      } else onLine?.(line, start, caret, set, false);
-    }
-    prev = ta.value;
-    after?.();
-  });
-}
-
 function lineHtml(e) {
   let t = e.t || '', pre = '';
   if (/^[☐☑] /.test(t)) { pre = `<button class="le-chk${t[0] === '☑' ? ' on' : ''}" type="button" aria-label="Toggle"></button>`; t = t.slice(2); }
   else if (/^• /.test(t)) { pre = '<span class="le-bul">•</span>'; t = t.slice(2); }
   const dot = e.c ? `<i class="le-dot" style="background:${COLORS[e.c] || COLORS.x}"></i>` : '';
-  return `<div class="le-line${e.x ? ' x' : ''}" data-id="${e.id}">${dot}${pre}<span class="le-t">${esc(t) || '&nbsp;'}</span>${e.imp ? '<b class="le-imp">!</b>' : ''}</div>`;
+  return `<div class="le-line${e.x ? ' x' : ''}" data-id="${e.id}">${dot}${pre}<span class="le-t">${richHtml(t) || '&nbsp;'}</span>${e.imp ? '<b class="le-imp">!</b>' : ''}</div>`;
 }
 
 // Matches new lines to existing entries: exact text first, then by position. Returns ids per item.
@@ -92,7 +62,7 @@ function reconcile(old, items, base) {
 export class LineEditor {
   // o: { k, s, filter, moveTime, placeholder, onTimeMoved(id), onDate(id, found, editor), onLongPress(entry), onEditEnd(editor) }
   constructor(o) {
-    this.o = o; this.editing = false; this.ta = null; this.timer = null; this.owned = null;
+    this.o = o; this.editing = false; this.rt = null; this.timer = null; this.owned = null;
     this.el = document.createElement('div');
     this.el.className = 'le';
     this.el.addEventListener('click', e => this.onClick(e));
@@ -124,40 +94,36 @@ export class LineEditor {
 
   // idx: line to put the caret on (-1 = end). newLine: start a fresh line at the end.
   edit(idx = -1, newLine = false) {
-    if (this.editing) { this.ta.focus(); return; }
+    if (this.editing) { this.rt.focus(); return; }
     const L = this.list();
     this.editing = true;
     this.owned = new Set(L.map(e => e.id));
-    const ta = this.ta = document.createElement('textarea');
-    ta.className = 'le-ta'; ta.rows = 1;
-    ta.setAttribute('autocapitalize', 'sentences');
-    ta.setAttribute('enterkeyhint', 'enter');
-    ta.placeholder = this.o.placeholder && this.o.placeholder !== '—' ? this.o.placeholder : '';
-    ta.value = L.map(e => e.t).join('\n') + (newLine && L.length ? '\n' : '');
-    this.el.innerHTML = ''; this.el.appendChild(ta); autosize(ta);
-    ta.focus({ preventScroll: true });
-    let pos = ta.value.length;
-    if (idx >= 0) pos = L.slice(0, idx + 1).reduce((a, e) => a + e.t.length + 1, 0) - 1;
-    try { ta.setSelectionRange(pos, pos); } catch {}
-    listInput(ta, { onLine: (...a) => this.lineDone(...a), after: () => { autosize(ta); this.later(); } });
-    ta.addEventListener('blur', () => this.finish());
+    const rt = this.rt = new RichText({
+      value: L.map(e => e.t).join('\n') + (newLine && L.length ? '\n' : ''),
+      placeholder: this.o.placeholder && this.o.placeholder !== '—' ? this.o.placeholder : '',
+      onLine: (line, i, isList) => this.lineDone(line, i, isList),
+      onInput: () => this.later(),
+      onBlur: () => this.finish(),
+    });
+    this.el.innerHTML = ''; this.el.appendChild(rt.el);
+    rt.focus();
+    rt.caretToLineEnd(idx >= 0 ? idx : -1);
   }
 
   isLit(line) { for (const id of this.owned || []) { const e = S.entries.get(id); if (e && e.lit && e.t === line) return true; } return false; }
   movable(line) { return this.o.moveTime && parseTime(line) && !this.isLit(line); }
 
-  lineDone(line, start, caret, set, isList) {
-    const idx = this.ta.value.slice(0, start).split('\n').length - 1;
+  lineDone(line, i, isList) {
     if (!isList && this.movable(line)) {
-      const v = this.ta.value;
-      set(v.slice(0, start) + v.slice(caret), start);
-      this.handOff(line, idx);
+      this.rt.removeLine(i);
+      this.handOff(line, i);
       this.save();
       return;
     }
     if (this.o.onDate) {
-      const f = extractDates(isList ? line.slice(2) : line);
-      if (f) { const map = this.save(); const id = map[idx]; if (id) setTimeout(() => this.o.onDate(id, f, this), 0); }
+      const p = plain(line);
+      const f = extractDates(isList ? p.slice(2) : p);
+      if (f) { const map = this.save(); const id = map[i]; if (id) setTimeout(() => this.o.onDate(id, f, this), 0); }
     }
   }
 
@@ -168,12 +134,12 @@ export class LineEditor {
 
   later() { clearTimeout(this.timer); this.timer = setTimeout(() => this.save(), 800); }
 
-  // Writes the textarea back to entries. Returns line index -> entry id.
+  // Writes the field back to entries. Returns line index -> entry id.
   save() {
     clearTimeout(this.timer); this.timer = null;
-    if (!this.ta) return [];
-    const lines = this.ta.value.split('\n');
-    let n = lines.length; while (n > 0 && !lines[n - 1].trim()) n--;
+    if (!this.rt) return [];
+    const lines = this.rt.lines();
+    let n = lines.length; while (n > 0 && !plain(lines[n - 1]).trim()) n--;
     const items = [], lineOf = [];
     for (let i = 0; i < n; i++) {
       if (this.movable(lines[i])) continue; // a time line in progress is not saved until Enter / leaving
@@ -188,17 +154,17 @@ export class LineEditor {
 
   finish() {
     if (!this.editing) return;
-    const ta = this.ta;
+    const rt = this.rt;
     if (this.o.moveTime) {
       const keep = [], moved = [];
-      ta.value.split('\n').forEach((l, i) => (this.movable(l) ? moved.push([l, i]) : keep.push(l)));
-      if (moved.length) { ta.value = keep.join('\n'); moved.forEach(([l, i]) => this.handOff(l, i)); }
+      rt.lines().forEach((l, i) => (this.movable(l) ? moved.push([l, i]) : keep.push(l)));
+      if (moved.length) { rt.render(keep); moved.forEach(([l, i]) => this.handOff(l, i)); }
     }
     this.save();
-    this.editing = false; this.ta = null; this.owned = null;
+    this.editing = false; this.rt = null; this.owned = null;
     this.render();
     this.o.onEditEnd?.(this);
   }
 
-  stop() { if (this.editing) { const ta = this.ta; this.finish(); ta.blur(); } }
+  stop() { if (this.editing) { const el = this.rt.el; this.finish(); el.blur(); } }
 }
