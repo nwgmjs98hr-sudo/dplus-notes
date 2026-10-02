@@ -1139,6 +1139,11 @@ function registerSW() {
 
 async function boot() {
   registerSW();
+  // If starting takes long, the phone probably thinks it is online but nothing gets through (VPN, weak signal).
+  const slow = setTimeout(() => {
+    const b = $('.boot small');
+    if (b) b.textContent = 'Still loading… If a VPN is switched on without internet, turn it off.';
+  }, 6000);
   viewportFix();
   const demo = new URLSearchParams(location.search).has('demo');
   let backend;
@@ -1155,6 +1160,7 @@ async function boot() {
   }
   let started = false;
   backend.onAuth(user => {
+    clearTimeout(slow);
     if (user && !started) { started = true; startApp(backend, user); }
     else if (!user) { if (started) location.reload(); else showLogin(backend); }
   });

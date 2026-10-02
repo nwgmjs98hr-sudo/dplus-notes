@@ -10,7 +10,8 @@ export async function firebaseBackend(config) {
     import(base + 'firebase-firestore.js'),
   ]);
   const app = appM.initializeApp(config);
-  const auth = authM.getAuth(app);
+  // Email/password only: no popup/redirect helper, so starting offline never waits for the network.
+  const auth = authM.initializeAuth(app, { persistence: [authM.indexedDBLocalPersistence, authM.browserLocalPersistence] });
   let db;
   try {
     db = fs.initializeFirestore(app, { localCache: fs.persistentLocalCache({ tabManager: fs.persistentMultipleTabManager() }) });

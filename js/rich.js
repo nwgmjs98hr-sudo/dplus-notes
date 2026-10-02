@@ -121,7 +121,7 @@ export class RichText {
     el.setAttribute('role', 'textbox');
     el.setAttribute('aria-multiline', 'true');
     el.setAttribute('autocapitalize', 'sentences');
-    if (o.placeholder) el.dataset.ph = o.placeholder;
+    if (o.placeholder) el.style.setProperty('--ph', JSON.stringify(o.placeholder));
     el._rt = this;
     this.render((o.value || '').split('\n'));
     el.addEventListener('input', e => this.onInput(e));
@@ -140,7 +140,7 @@ export class RichText {
     this.el.innerHTML = (lines.length ? lines : ['']).map(l => `<div>${richHtml(l) || '<br>'}</div>`).join('');
     this.updEmpty();
   }
-  updEmpty() { const v = this.el.textContent; this.el.classList.toggle('empty', !v); }
+  updEmpty() { const v = this.el.textContent; this.el.classList.toggle('is-empty', !v); }
 
   focus() { this.el.focus({ preventScroll: true }); }
   caret() { const s = getSelection(); if (!s.rangeCount || !this.el.contains(s.focusNode)) return null; return toPos(this.el, scan(this.el), s.focusNode, s.focusOffset); }

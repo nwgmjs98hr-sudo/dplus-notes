@@ -21,7 +21,7 @@ svg { display: block; }
 #app { position: relative; height: var(--app-h, 100dvh); max-width: 640px; margin: 0 auto; display: flex; flex-direction: column; overflow: hidden; padding-top: var(--safe-t); }
 @media (min-width: 700px) { #app { border-left: 1px solid var(--ln); border-right: 1px solid var(--ln); } }
 .boot { margin: auto; font-family: var(--mono); font-weight: 700; font-size: 20px; color: var(--ac); text-align: center; line-height: 1.6; }
-.boot small { font-size: 12px; font-weight: 500; color: var(--dim); }
+.boot small { font-size: 12px; font-weight: 500; color: var(--dim); display: block; max-width: 280px; margin: 4px auto 0; font-family: var(--sans); }
 .page { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .scroll { overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: #3A3B37 transparent; }
 .scroll::-webkit-scrollbar { width: 4px; } .scroll::-webkit-scrollbar-thumb { background: #3A3B37; border-radius: 2px; }
@@ -122,7 +122,8 @@ body.kb .nav, body.kb #next, body.kb .weekbar, body.kb .legend { display: none; 
 .le-empty { color: var(--dim); }
 /* rich text field + highlighter */
 .rt { position: relative; outline: 0; min-height: 1.5em; font-size: 16px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; -webkit-user-select: text; user-select: text; -webkit-touch-callout: default; cursor: text; caret-color: var(--ac); }
-.rt.empty::before { content: attr(data-ph); color: var(--dim); position: absolute; left: inherit; top: inherit; pointer-events: none; }
+.rt > div { position: relative; }
+.rt.is-empty > div:first-child::before { content: var(--ph, ''); color: var(--dim); position: absolute; left: 0; top: 0; right: 0; pointer-events: none; }
 .le .rt { font-size: 16px; }
 mark.hl { color: inherit; border-radius: 3px; padding: 0 1px; -webkit-box-decoration-break: clone; box-decoration-break: clone; }
 .hl-r { background: rgba(229, 101, 92, .40); } .hl-o { background: rgba(217, 161, 75, .40); } .hl-b { background: rgba(91, 141, 239, .40); }
