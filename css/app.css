@@ -82,6 +82,10 @@ body.kb .nav, body.kb #next, body.kb .weekbar, body.kb .legend { display: none; 
 .hint { font-size: 11px; color: var(--dim); }
 .divider { height: 1px; background: var(--ln); margin: 6px 14px 8px; flex-shrink: 0; }
 .sched { height: clamp(150px, 30vh, 280px); flex-shrink: 0; margin: 4px 14px 0; }
+.split { height: 22px; margin: 0 14px 2px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; position: relative; cursor: row-resize; touch-action: none; }
+.split::before { content: ''; position: absolute; left: 0; right: 0; top: 50%; height: 1px; background: var(--ln); }
+.split i { position: relative; width: 40px; height: 5px; border-radius: 3px; background: #3A3B37; transition: background .15s, width .15s; }
+.split.drag i, .split:hover i { background: var(--ac); width: 56px; }
 .notes { flex: 1; min-height: 80px; margin-top: 4px; padding: 0 18px 4px; display: flex; flex-direction: column; }
 .notes-fill { flex: 1; min-height: 48px; cursor: text; }
 .blk-lab { font-size: 11px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--mu); margin: 14px 0 4px; }

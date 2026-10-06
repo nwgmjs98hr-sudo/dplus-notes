@@ -2,7 +2,7 @@
 // is stored at install time and served from the cache first, so the app starts instantly offline
 // or on a bad connection. A new release changes CACHE, the browser installs the new worker in the
 // background and the page reloads once to use it.
-const CACHE = 'dplus-v5';
+const CACHE = 'dplus-v6';
 const FB = 'https://www.gstatic.com/firebasejs/12.18.0/';
 const SHELL = ['./', 'index.html', 'css/app.css', 'js/app.js', 'js/util.js', 'js/store.js', 'js/editor.js',
   'js/rich.js', 'js/firebase.js', 'js/demo.js', 'js/config.js', 'manifest.webmanifest',

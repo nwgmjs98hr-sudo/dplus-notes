@@ -494,7 +494,7 @@ const Days = {
       <div class="day-body" id="dayBody">
         <div class="sec-head"><span>Schedule</span><button class="link" id="yday" type="button">Yesterday</button></div>
         <div class="sched scroll" id="sched"></div>
-        <div class="divider"></div>
+        <div class="split" id="split" role="separator" aria-orientation="horizontal" aria-label="Drag to resize schedule and notes"><i></i></div>
         <div class="sec-head"><span>Notes</span><span class="hint">tap to write</span></div>
         <div class="notes scroll" id="notes">
           <div id="dayEd"></div>
@@ -529,9 +529,30 @@ const Days = {
     $('#wb1').onclick = () => openWeek(1);
     $('#wb2').onclick = () => openWeek(2);
     onSwipe($('#dayBody'), dir => { const n = this.offset + dir; if (n >= -1 && n <= 4) this.setOffset(n); });
+    this.splitter();
     this.setDate(true);
   },
   unmount() { this.el = null; },
+
+  // Drag the line between schedule and notes; the height is remembered on this device.
+  splitter() {
+    const sched = $('#sched'), split = $('#split'), body = $('#dayBody');
+    const clamp = h => Math.max(70, Math.min(h, body.clientHeight - 130));
+    const saved = +localStorage.getItem('dplus-split') || 0;
+    if (saved) sched.style.height = clamp(saved) + 'px';
+    let y0 = 0, h0 = 0, on = false;
+    split.addEventListener('pointerdown', e => {
+      on = true; y0 = e.clientY; h0 = sched.getBoundingClientRect().height;
+      split.setPointerCapture(e.pointerId); split.classList.add('drag'); e.preventDefault();
+    });
+    split.addEventListener('pointermove', e => { if (on) sched.style.height = clamp(h0 + e.clientY - y0) + 'px'; });
+    const end = () => {
+      if (!on) return; on = false; split.classList.remove('drag');
+      try { localStorage.setItem('dplus-split', Math.round(sched.getBoundingClientRect().height)); } catch {}
+    };
+    split.addEventListener('pointerup', end); split.addEventListener('pointercancel', end);
+    split.addEventListener('dblclick', () => { sched.style.height = ''; try { localStorage.removeItem('dplus-split'); } catch {} });
+  },
 
   setOffset(n) { if (n === this.offset) return; blurActive(); this.offset = n; this.setDate(); },
 
