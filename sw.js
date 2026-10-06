@@ -3,7 +3,7 @@
 // or on a bad connection. A new release changes CACHE, the browser installs the new worker in the
 // background and the page reloads once to use it.
 // Other CDN files (fonts, the text scanner) are kept in RUNTIME, which survives app updates.
-const CACHE = 'dplus-v7';
+const CACHE = 'dplus-v8';
 const RUNTIME = 'dplus-cdn';
 const FB = 'https://www.gstatic.com/firebasejs/12.18.0/';
 const SHELL = ['./', 'index.html', 'css/app.css', 'js/app.js', 'js/util.js', 'js/store.js', 'js/editor.js',
