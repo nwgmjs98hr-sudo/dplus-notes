@@ -11,16 +11,19 @@
 //   folders   { name, p, o }              p = parent folder id or null
 //   notes     { f, title, body, c?, imp? }
 //   recurring { t, wd: [0..6], from, c? } wd uses JS weekday numbers (0 = Sunday)
+//   files     { name, kind: 'image'|'doc'|'pdf'|'file', mime, size, bytes, parts, w?, h?, thumb?, on }
+//             on = 'note:<id>' or 'day:YYYY-MM-DD'; the content lives in 'chunks' (not mirrored in memory)
+//   chunks    { f, i, d }                 id = '<fileId>_<i>', d = base64 piece of the file
 
 import { parseTime, addDays, todayStr, parseYmd, weekMonday, isDateKey, isWeekKey, hasRed } from './util.js';
 
 export const COLORS = { r: '#E5655C', o: '#D9A14B', b: '#5B8DEF', g: '#7FBF7A', p: '#A98BD8', x: '#6F7069' };
 export const COLOR_KEYS = ['r', 'o', 'b', 'g', 'p', 'x'];
 export const COLOR_NAMES = { r: 'Important', o: 'Deadline', b: 'Service', g: 'Training', p: 'Personal', x: 'Info' };
-const COLS = ['entries', 'days', 'folders', 'notes', 'recurring'];
+const COLS = ['entries', 'days', 'folders', 'notes', 'recurring', 'files'];
 
 export const S = {
-  entries: new Map(), days: new Map(), folders: new Map(), notes: new Map(), recurring: new Map(),
+  entries: new Map(), days: new Map(), folders: new Map(), notes: new Map(), recurring: new Map(), files: new Map(),
   user: null, kind: '', loaded: false, error: '',
   status: { online: navigator.onLine, pending: false, cache: true, lastSync: +localStorage.getItem('dplus-lastsync') || 0 },
 };
@@ -96,6 +99,11 @@ export function del(col, id) {
   emit();
 }
 export const stripId = e => { const { id, ...r } = e; return r; };
+// Large documents that are not kept in memory (file chunks).
+export const rawSet = (col, id, data) => B.set(S.user.uid, col, id, data);
+export const rawDel = (col, id) => B.del(S.user.uid, col, id);
+export const rawGet = (col, id) => B.get(S.user.uid, col, id);
+export const filesOf = on => [...S.files.values()].filter(f => f.on === on).sort((a, b) => (a.u || 0) - (b.u || 0));
 
 const byO = (a, b) => (a.o ?? 0) - (b.o ?? 0) || (a.id < b.id ? -1 : 1);
 function index() {
@@ -153,4 +161,8 @@ function cleanup() {
     if (isDateKey(d) && d < cut) { del('entries', e.id); n++; }
   }
   for (const id of [...S.days.keys()]) if (isDateKey(id) && id < cut && n++ < 400) del('days', id);
+  for (const f of [...S.files.values()]) {
+    const d = (f.on || '').startsWith('day:') ? f.on.slice(4) : '';
+    if (isDateKey(d) && d < cut && n++ < 450) { for (let i = 0; i < (f.parts || 0); i++) rawDel('chunks', `${f.id}_${i}`); del('files', f.id); }
+  }
 }

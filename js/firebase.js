@@ -14,7 +14,8 @@ export async function firebaseBackend(config) {
   const auth = authM.initializeAuth(app, { persistence: [authM.indexedDBLocalPersistence, authM.browserLocalPersistence] });
   let db;
   try {
-    db = fs.initializeFirestore(app, { localCache: fs.persistentLocalCache({ tabManager: fs.persistentMultipleTabManager() }) });
+    // Bigger device cache so opened attachments stay available offline.
+    db = fs.initializeFirestore(app, { localCache: fs.persistentLocalCache({ tabManager: fs.persistentMultipleTabManager(), cacheSizeBytes: 400 * 1024 * 1024 }) });
   } catch (e) {
     console.warn('Offline cache not available, using memory cache', e);
     db = fs.getFirestore(app);
@@ -42,5 +43,11 @@ export async function firebaseBackend(config) {
     },
     set(uid, col, id, data) { fs.setDoc(ref(uid, col, id), data).catch(e => console.error('write failed', e)); },
     del(uid, col, id) { fs.deleteDoc(ref(uid, col, id)).catch(e => console.error('delete failed', e)); },
+    async get(uid, col, id) {
+      // Try the device cache first (instant, works offline), then the server.
+      try { const s = await fs.getDocFromCache(ref(uid, col, id)); if (s.exists()) return s.data(); } catch {}
+      const s = await fs.getDoc(ref(uid, col, id));
+      return s.exists() ? s.data() : null;
+    },
   };
 }

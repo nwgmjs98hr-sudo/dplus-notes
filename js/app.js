@@ -5,6 +5,8 @@ import {
 } from './store.js';
 import { LineEditor, attachLongPress, lpRecently } from './editor.js';
 import { RichText } from './rich.js';
+import { saveFile, fileBlob, deleteFile, prepareImage, fmtSize, usage, QUOTA } from './files.js';
+import { pickFile, cropImage, recognize, prepareScanner, scannerReady } from './scan.js';
 import { CONFIG, VERSION, FIREBASE_VERSION } from './config.js';
 
 const app = document.getElementById('app');
@@ -44,6 +46,11 @@ const I = {
   down: svg('<path d="M6 9l6 6 6-6"/>'),
   repeat: svg('<path d="M17 2l4 4-4 4"/><path d="M3 11V9a3 3 0 0 1 3-3h15M7 22l-4-4 4-4"/><path d="M21 13v2a3 3 0 0 1-3 3H3"/>'),
   more: svg('<circle cx="5" cy="12" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="19" cy="12" r="1.2"/>'),
+  camera: svg('<path d="M4 8h3l2-3h6l2 3h3a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z"/><circle cx="12" cy="13" r="3.5"/>'),
+  image: svg('<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="M21 16l-5-5-9 9"/>'),
+  clip: svg('<path d="M21 11l-8.5 8.5a5 5 0 0 1-7-7L14 4a3.5 3.5 0 0 1 5 5l-8.5 8.5a2 2 0 0 1-3-3L15 7"/>'),
+  doc: svg('<path d="M6 3h9l5 5v11a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/><path d="M14 3v6h6M8 13h8M8 17h6"/>'),
+  share: svg('<path d="M12 3v12M7 8l5-5 5 5"/><path d="M5 12v7a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-7"/>'),
 };
 
 /* ---------- toast with undo ---------- */
@@ -220,7 +227,10 @@ function openPlus() {
   const wd = new Set();
   openSheet({
     cls: 'plus',
-    html: `<div class="sh-head"><div class="sh-t">New entry</div><button class="pill accent" type="button" data-save>Save</button></div>
+    html: `<div class="sh-head"><div class="sh-t">New entry</div><div class="row">
+        <button class="icon-btn" type="button" data-scan="cam" aria-label="Scan text with the camera">${I.camera}</button>
+        <button class="icon-btn" type="button" data-scan="lib" aria-label="Scan text from a picture">${I.image}</button>
+        <button class="pill accent" type="button" data-save>Save</button></div></div>
       <div class="ps-slot"></div>
       <div class="lab">Color of the whole entry <span class="muted">· or select text to color a part</span></div>${colorRow(null)}
       <div class="lab" style="margin-top:2px">Where</div>
@@ -251,6 +261,10 @@ function openPlus() {
         else if (b.dataset.r) { rep = b.dataset.r; if (rep !== 'none' && target.t === 'w') target = { t: 'd', n: 0 }; paint(); }
         else if (b.dataset.d !== undefined) { const n = +b.dataset.d; wd.has(n) ? wd.delete(n) : wd.add(n); paint(); }
         else if (b.dataset.c !== undefined) { color = b.dataset.c || null; $$('.sw', sh).forEach(x => x.classList.toggle('on', x === b)); }
+        else if (b.dataset.scan) scanInto(pickFile({ camera: b.dataset.scan === 'cam' }), text => {
+          const cur = rt.value().replace(/\s+$/, '');
+          rt.setValue(cur ? cur + '\n' + text : text);
+        });
         else if (b.hasAttribute('data-save')) save();
       });
       function save() {
@@ -281,6 +295,181 @@ function openPlus() {
       }
     },
   });
+}
+
+/* ---------- busy overlay ---------- */
+function busy(msg) {
+  const v = mk('div', 'busy', `<div class="busy-box"><i class="spin"></i><span></span></div>`);
+  $('span', v).textContent = msg;
+  document.body.appendChild(v);
+  return { set: m => { $('span', v).textContent = m; }, close: () => v.remove() };
+}
+
+/* ---------- scan text from a photo ---------- */
+// filePromise comes from pickFile() started directly in the tap handler.
+async function scanInto(filePromise, onText) {
+  const file = await filePromise; if (!file) return;
+  const cut = await cropImage(file, { title: 'Frame the text', ok: 'Read text' }); if (!cut) return;
+  const b = busy('Starting the scanner…');
+  try {
+    const text = await recognize(cut.src, cut.crop, m => b.set(m));
+    b.close();
+    if (!text.trim()) { toast('No text found. Try a closer, sharper photo.'); return; }
+    onText(text);
+    toast('Text added – check it and edit if needed');
+  } catch (e) { b.close(); toast(e.message || 'Scanning failed'); }
+}
+
+/* ---------- attachments ---------- */
+const tileHtml = f => `<button class="att-t" data-fid="${f.id}" type="button">${f.thumb ? `<img src="${f.thumb}" alt="">` : `<span class="att-ic">${f.kind === 'pdf' ? 'PDF' : 'FILE'}</span>`}<span class="att-n">${esc(f.name)}</span><span class="att-s">${fmtSize(f.size)}</span></button>`;
+const stripHtml = on => { const L = [...S.files.values()].filter(f => f.on === on).sort((a, b) => (a.u || 0) - (b.u || 0)); return L.length ? `<div class="att-strip scroll-x">${L.map(tileHtml).join('')}</div>` : ''; };
+function wireStrip(el) {
+  el.addEventListener('click', e => { if (lpRecently()) return; const t = e.target.closest('[data-fid]'); if (t) openFile(S.files.get(t.dataset.fid)); });
+  attachLongPress(el, '[data-fid]', t => fileMenu(S.files.get(t.dataset.fid)));
+}
+const stamp = () => `${U.fmtDMY(U.todayStr())} ${U.nowHHMM()}`;
+
+function attachMenu(on, onReadText) {
+  openSheet({
+    cls: 'menu',
+    html: `<div class="m-t">Attach</div>
+      <button class="m-btn" data-a="doc" type="button"><span class="mi">${I.doc}</span><span>Scan a document<small>Page in grey, very small (about 150 KB)</small></span></button>
+      <button class="m-btn" data-a="cam" type="button"><span class="mi">${I.camera}</span><span>Take a photo</span></button>
+      <button class="m-btn" data-a="lib" type="button"><span class="mi">${I.image}</span><span>Choose a photo</span></button>
+      <button class="m-btn" data-a="file" type="button"><span class="mi">${I.clip}</span><span>PDF or other file<small>Up to 10 MB</small></span></button>
+      ${onReadText ? `<button class="m-btn" data-a="ocr" type="button"><span class="mi">${I.camera}</span><span>Scan text into this note</span></button>` : ''}`,
+    mount(sh, api) {
+      sh.addEventListener('click', ev => {
+        const a = ev.target.closest('[data-a]')?.dataset.a; if (!a) return;
+        // the picker must open inside this tap
+        const p = a === 'file' ? pickFile({ accept: 'application/pdf,image/*,.pdf' }) : pickFile({ camera: a === 'doc' || a === 'cam' || a === 'ocr' });
+        api.close();
+        if (a === 'ocr') scanInto(p, onReadText);
+        else addAttachment(p, a, on);
+      });
+    },
+  });
+}
+
+async function addAttachment(filePromise, how, on) {
+  const file = await filePromise; if (!file) return;
+  try {
+    if (how === 'file' && !/^image\//.test(file.type)) {
+      const b = busy('Saving…');
+      try { await saveFile(file, { name: file.name, kind: /pdf/i.test(file.type) || /\.pdf$/i.test(file.name) ? 'pdf' : 'file', on }); }
+      finally { b.close(); }
+      toast(`Saved · ${fmtSize(file.size)}`); return;
+    }
+    let src, crop = null, mode = 'photo';
+    if (how === 'doc') {
+      const cut = await cropImage(file, { title: 'Frame the page', ok: 'Save scan' }); if (!cut) return;
+      src = cut.src; crop = cut.full ? null : cut.crop; mode = 'doc';
+    } else src = await (await import('./files.js')).loadBitmap(file);
+    const b = busy('Saving…');
+    try {
+      const img = await prepareImage(src, crop, mode);
+      const name = mode === 'doc' ? `Scan ${stamp()}` : (how === 'cam' ? `Photo ${stamp()}` : (file.name || `Picture ${stamp()}`).replace(/\.(heic|heif|png|webp)$/i, '.jpg'));
+      await saveFile(img.blob, { name, kind: mode === 'doc' ? 'doc' : 'image', w: img.w, h: img.h, thumb: img.thumb, on });
+      b.close(); toast(`Saved · ${fmtSize(img.blob.size)}`);
+    } catch (e) { b.close(); throw e; }
+  } catch (e) { toast(e.message || 'Could not save the file'); }
+}
+
+async function shareFile(f) {
+  try {
+    const blob = await fileBlob(f);
+    const name = /\.[a-z0-9]{2,4}$/i.test(f.name) ? f.name : f.name + (f.mime === 'image/jpeg' ? '.jpg' : f.kind === 'pdf' ? '.pdf' : '');
+    const file = new File([blob], name, { type: f.mime });
+    if (navigator.canShare?.({ files: [file] })) { await navigator.share({ files: [file] }); return; }
+    const a = mk('a'); a.href = URL.createObjectURL(blob); a.download = name; document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+  } catch (e) { if (e?.name !== 'AbortError') toast(offlineMsg(e)); }
+}
+const offlineMsg = e => (e?.message === 'missing' || !navigator.onLine) ? 'Not saved on this device yet. Open it once with internet.' : 'Could not open the file';
+
+function fileMenu(f) {
+  if (!f) return;
+  const isImg = f.kind === 'image' || f.kind === 'doc';
+  openSheet({
+    cls: 'menu',
+    html: `<div class="m-t">${esc(f.name)} · ${fmtSize(f.size)}</div>
+      <button class="m-btn" data-a="open" type="button">Open</button>
+      <button class="m-btn" data-a="share" type="button">Share or save to the phone</button>
+      <button class="m-btn" data-a="ren" type="button">Rename</button>
+      ${isImg && f.on?.startsWith('note:') ? '<button class="m-btn" data-a="ocr" type="button">Read text from it into the note</button>' : ''}
+      ${isImg && f.on?.startsWith('day:') ? '<button class="m-btn" data-a="ocr" type="button">Read text from it into the notes</button>' : ''}
+      <button class="m-btn danger" data-a="del" type="button">Delete</button>`,
+    mount(sh, api) {
+      sh.addEventListener('click', async ev => {
+        const a = ev.target.closest('[data-a]')?.dataset.a; if (!a) return;
+        api.close();
+        if (a === 'open') openFile(f);
+        if (a === 'share') shareFile(f);
+        if (a === 'ren') inputSheet('Rename file', f.name, name => put('files', f.id, { name }));
+        if (a === 'del') confirmSheet(`Delete “${f.name}”?`, 'Delete', () => { deleteFile(f); toast('File deleted'); });
+        if (a === 'ocr') {
+          const b = busy('Starting the scanner…');
+          try {
+            const { loadBitmap } = await import('./files.js');
+            const src = await loadBitmap(await fileBlob(f));
+            const text = await recognize(src, null, m => b.set(m));
+            b.close();
+            if (!text.trim()) { toast('No text found'); return; }
+            if (f.on.startsWith('note:')) {
+              const id = f.on.slice(5), n = S.notes.get(id); if (!n) return;
+              put('notes', id, { body: ((n.body || '').replace(/\s+$/, '') + '\n' + text).replace(/^\n/, '') });
+            } else {
+              const d = f.on.slice(4); let o = nextO(d, 'day');
+              text.split('\n').filter(l => l.trim()).forEach(l => { put('entries', newId(), { k: d, s: 'day', t: l, o }); o += 10; });
+            }
+            toast('Text added');
+          } catch (e) { b.close(); toast(e.message === 'missing' ? offlineMsg(e) : (e.message || 'Scanning failed')); }
+        }
+      });
+    },
+  });
+}
+
+async function openFile(f) {
+  if (!f) return;
+  blurActive();
+  const v = mk('div', 'full fv');
+  v.innerHTML = `<div class="ne-head"><button class="back" type="button">${I.left}<span>Back</span></button><span class="ne-f">${esc(f.name)}</span><button class="icon-btn" type="button" data-share aria-label="Share or save">${I.share}</button></div>
+    <div class="fv-body"><div class="fv-msg">Loading…</div></div>`;
+  $('#layer').append(v);
+  v.getBoundingClientRect(); v.classList.add('in');
+  let url = null;
+  const close = () => { v.classList.remove('in'); setTimeout(() => { v.remove(); if (url) URL.revokeObjectURL(url); }, 300); };
+  $('.back', v).onclick = close;
+  $('[data-share]', v).onclick = () => shareFile(f);
+  const body = $('.fv-body', v);
+  try {
+    const blob = await fileBlob(f);
+    url = URL.createObjectURL(blob);
+    if (/^image\//.test(f.mime)) {
+      body.innerHTML = `<div class="fv-zoom scroll"><img alt="" src="${url}"></div><div class="fv-hint">Double-tap to zoom</div>`;
+      const z = $('.fv-zoom', body); let last = 0;
+      const toggle = (x, y) => {
+        const on = !z.classList.contains('zoomed'), r = z.getBoundingClientRect();
+        const fx = (x - r.left + z.scrollLeft) / z.scrollWidth, fy = (y - r.top + z.scrollTop) / z.scrollHeight;
+        z.classList.toggle('zoomed', on);
+        if (on) { z.scrollLeft = fx * z.scrollWidth - r.width / 2; z.scrollTop = fy * z.scrollHeight - r.height / 2; }
+      };
+      z.addEventListener('dblclick', e => toggle(e.clientX, e.clientY));
+      z.addEventListener('touchend', e => { const now = Date.now(); if (now - last < 300 && e.changedTouches[0]) { e.preventDefault(); toggle(e.changedTouches[0].clientX, e.changedTouches[0].clientY); } last = now; });
+    } else if (f.kind === 'pdf') {
+      body.innerHTML = `<iframe class="fv-pdf" title="${esc(f.name)}" src="${url}"></iframe><div class="row" style="justify-content:center;padding:10px"><a class="pill" href="${url}" target="_blank" rel="noopener">Open in viewer</a><button class="pill" type="button" data-sh>Share or save</button></div>`;
+      $('[data-sh]', body).onclick = () => shareFile(f);
+    } else {
+      body.innerHTML = `<div class="fv-msg">${esc(f.name)} · ${fmtSize(f.size)}<br><br><button class="pill accent" type="button" data-sh>Share or save</button></div>`;
+      $('[data-sh]', body).onclick = () => shareFile(f);
+    }
+  } catch (e) { body.innerHTML = `<div class="fv-msg">${esc(offlineMsg(e))}</div>`; }
+}
+
+// Delete attachments of something that was deleted, unless it comes back (undo) within a few seconds.
+function dropFilesLater(on, stillGone) {
+  setTimeout(() => { if (stillGone()) [...S.files.values()].filter(f => f.on === on).forEach(deleteFile); }, 6500);
 }
 
 /* ---------- settings (tap on sync status) ---------- */
@@ -319,9 +508,16 @@ function openSettings() {
       <button class="m-btn" data-a="install" type="button">Install on phone or laptop</button>
       <button class="m-btn danger" data-a="out" type="button">Sign out<small>Also removes the notes saved on this device</small></button>
       <div class="m-row"><span>Offline</span><b class="diag">checking…</b></div>
+      <div class="m-row" style="display:block"><div class="stor-l"><span>Storage</span><b class="stor-t"></b></div><div class="stor"><i></i></div><div class="sh-s stor-s"></div></div>
+      <div class="m-row"><span>Scanner</span><b>${scannerReady() ? 'ready offline ✓' : (navigator.onLine ? 'downloading in the background…' : 'needs internet once')}</b></div>
       <div class="sh-s" style="margin-top:12px">Version ${VERSION}</div>`,
     mount(sh, api) {
       offlineDiag().then(t => { const d = $('.diag', sh); if (d) d.textContent = t; });
+      const us = usage(), pct = Math.min(100, us.used / QUOTA * 100);
+      $('.stor-t', sh).textContent = `${fmtSize(us.used)} of 1 GB`;
+      $('.stor i', sh).style.width = Math.max(pct, 0.6) + '%';
+      $('.stor i', sh).classList.toggle('hi', pct > 80);
+      $('.stor-s', sh).textContent = `${us.count} file${us.count === 1 ? '' : 's'} (${fmtSize(us.files)}) · notes and days ${fmtSize(us.text)}`;
       sh.addEventListener('click', ev => {
         const a = ev.target.closest('[data-a]')?.dataset.a; if (!a) return;
         api.close();
@@ -495,11 +691,12 @@ const Days = {
         <div class="sec-head"><span>Schedule</span><button class="link" id="yday" type="button">Yesterday</button></div>
         <div class="sched scroll" id="sched"></div>
         <div class="split" id="split" role="separator" aria-orientation="horizontal" aria-label="Drag to resize schedule and notes"><i></i></div>
-        <div class="sec-head"><span>Notes</span><span class="hint">tap to write</span></div>
+        <div class="sec-head"><span>Notes</span><span class="row"><span class="hint">tap to write</span><button class="icon-btn sm" id="dayClip" type="button" aria-label="Attach a file to this day">${I.clip}</button></span></div>
         <div class="notes scroll" id="notes">
           <div id="dayEd"></div>
           <div id="planBlk" hidden><div class="blk-lab">Planned</div><div id="planEd"></div></div>
           <div id="recBlk"></div>
+          <div id="attBlk"></div>
           <div class="notes-fill" id="notesFill"></div>
         </div>
       </div>
@@ -524,6 +721,8 @@ const Days = {
       if (it.rec) openRecurring(it.rec); else entryMenu(it.e);
     });
     $('#notesFill').onclick = () => this.dayEd.edit(-1, true);
+    $('#dayClip').onclick = () => attachMenu('day:' + this.date, null);
+    wireStrip($('#attBlk'));
     $('#recBlk').onclick = e => { const b = e.target.closest('[data-rid]'); if (b) openRecurring(S.recurring.get(b.dataset.rid)); };
     $('#wb0').onclick = () => openWeek(0);
     $('#wb1').onclick = () => openWeek(1);
@@ -581,6 +780,8 @@ const Days = {
     this.dayEd.render(); this.planEd.render();
     $('#planBlk').hidden = this.planEd.isEmpty();
     this.renderRec(); this.renderWeekbar();
+    const att = stripHtml('day:' + this.date);
+    $('#attBlk').innerHTML = att ? '<div class="blk-lab">Attachments</div>' + att : '';
   },
 
   renderHeader() {
@@ -849,7 +1050,7 @@ function folderMenu(f) {
           const ns = [...S.notes.values()].filter(n => fids.includes(n.f));
           const go = () => {
             const fc = fids.map(id => [id, stripId(S.folders.get(id))]), nc = ns.map(n => [n.id, stripId(n)]);
-            fids.forEach(id => del('folders', id)); ns.forEach(n => del('notes', n.id));
+            fids.forEach(id => del('folders', id)); ns.forEach(n => { del('notes', n.id); dropFilesLater('note:' + n.id, () => !S.notes.has(n.id)); });
             toast('Folder deleted', () => { fc.forEach(([id, v]) => put('folders', id, v)); nc.forEach(([id, v]) => put('notes', id, v)); });
           };
           if (ns.length || fids.length > 1) confirmSheet(`Delete “${f.name}” with ${ns.length} note${ns.length === 1 ? '' : 's'}${fids.length > 1 ? ` and ${fids.length - 1} subfolder${fids.length > 2 ? 's' : ''}` : ''}?`, 'Delete', go);
@@ -876,7 +1077,7 @@ function noteMenu(n, onGone) {
         api.close();
         if (a === 'imp') put('notes', n.id, { imp: false });
         if (a === 'mv') folderPicker('Move note to', null, f => put('notes', n.id, { f }));
-        if (a === 'del') { const copy = stripId(S.notes.get(n.id) || n); del('notes', n.id); onGone?.(); toast('Note deleted', () => put('notes', n.id, copy)); }
+        if (a === 'del') { const copy = stripId(S.notes.get(n.id) || n); del('notes', n.id); onGone?.(); toast('Note deleted', () => put('notes', n.id, copy)); dropFilesLater('note:' + n.id, () => !S.notes.has(n.id)); }
       });
     },
   });
@@ -905,8 +1106,8 @@ function openNote(id, isNew) {
   blurActive();
   const v = mk('div', 'full ne');
   const path = []; let f = S.folders.get(n.f); while (f) { path.unshift(f.name); f = S.folders.get(f.p); }
-  v.innerHTML = `<div class="ne-head"><button class="back" type="button">${I.left}<span>Notes</span></button><span class="ne-f">${esc(path.join(' / '))}</span><span class="clock-s mini-clock">${U.nowHHMM()}</span><button class="icon-btn" type="button" data-more aria-label="More">${I.more}</button></div>
-    <input class="ne-title" placeholder="Title" autocapitalize="sentences"><div class="ne-slot"></div>`;
+  v.innerHTML = `<div class="ne-head"><button class="back" type="button">${I.left}<span>Notes</span></button><span class="ne-f">${esc(path.join(' / '))}</span><span class="clock-s mini-clock">${U.nowHHMM()}</span><button class="icon-btn" type="button" data-clip aria-label="Attach">${I.clip}</button><button class="icon-btn" type="button" data-more aria-label="More">${I.more}</button></div>
+    <input class="ne-title" placeholder="Title" autocapitalize="sentences"><div class="ne-att"></div><div class="ne-slot"></div>`;
   const ti = $('.ne-title', v);
   ti.value = n.title || '';
   const bo = new RichText({
@@ -939,17 +1140,30 @@ function openNote(id, isNew) {
     if (document.activeElement !== ti && !t && (cur.title || '') !== ti.value) ti.value = cur.title || '';
     if (document.activeElement !== bo.el && !t && (cur.body || '') !== bo.value()) bo.setValue(cur.body || '');
   };
-  updaters.add(upd);
+  const att = $('.ne-att', v);
+  const paintAtt = () => { att.innerHTML = stripHtml('note:' + id); };
+  paintAtt(); wireStrip(att);
+  const upd2 = upd;
+  const updAll = () => { upd2(); paintAtt(); };
+  updaters.add(updAll);
+  $('[data-clip]', v).onclick = () => {
+    save();
+    attachMenu('note:' + id, text => {
+      const cur = S.notes.get(id); if (!cur) return;
+      const body = ((cur.body || '').replace(/\s+$/, '') + '\n' + text).replace(/^\n/, '');
+      put('notes', id, { body }); bo.setValue(body);
+    });
+  };
   let closed = false;
   const close = gone => {
     if (closed) return; closed = true;
-    updaters.delete(upd);
+    updaters.delete(updAll);
     if (!gone) {
       const val = bo.value(), trimmed = val.replace(/(\n(• |☐ |☑ )?[ \t]*)+$/, '');
       if (trimmed !== val) bo.setValue(trimmed);
       save();
       const cur = S.notes.get(id);
-      if (cur && !(cur.title || '').trim() && !pl(cur.body).trim()) del('notes', id);
+      if (cur && !(cur.title || '').trim() && !pl(cur.body).trim() && ![...S.files.values()].some(f => f.on === 'note:' + id)) del('notes', id);
     }
     blurActive();
     v.classList.remove('in'); setTimeout(() => v.remove(), 300);
@@ -990,20 +1204,25 @@ function noteDatePrompt(id, line, found, bo) {
 }
 
 const Archive = {
-  q: '', openId: null,
+  q: '', openId: null, open: new Set(),
   mount(el, q) {
     this.el = el;
     if (q != null) this.q = q;
     el.innerHTML = `
-      <header class="ph"><div><div class="ph-t">Archive</div><div class="ph-s">Past days and weeks · kept for 1 year</div></div><div class="ph-r"><span class="mini-clock"></span></div></header>
+      <header class="ph"><div><div class="ph-t">Archive</div><div class="ph-s">Kept for 1 year</div></div><div class="ph-r"><span class="mini-clock"></span><button class="link" id="arAll" type="button">Open all</button></div></header>
       <label class="search">${I.search}<input id="arQ" type="search" placeholder="Search archive" autocomplete="off" enterkeyhint="search"></label>
       <div class="ar-list scroll" id="arL"></div>`;
     const inp = $('#arQ'); inp.value = this.q;
     inp.oninput = () => { this.q = inp.value; this.openId = null; this.update(); };
+    $('#arAll').onclick = () => {
+      if (this.open.size) this.open.clear(); else this.keys?.forEach(k => this.open.add(k));
+      this.update();
+    };
     const L = $('#arL');
     L.onclick = e => {
       if (lpRecently()) return;
       const b = e.target.closest('button'); if (!b) return;
+      if (b.dataset.day) { const k = b.dataset.day; this.open.has(k) ? this.open.delete(k) : this.open.add(k); this.update(); return; }
       if (b.dataset.mv) { this.openId = this.openId === b.dataset.mv ? null : b.dataset.mv; this.update(); return; }
       if (b.dataset.to) {
         const id = b.dataset.id, cur = S.entries.get(id); if (!cur) return;
@@ -1014,29 +1233,45 @@ const Archive = {
       }
     };
     attachLongPress(L, '.ar-row[data-id]', t => entryMenu(S.entries.get(t.dataset.id)));
+    wireStrip(L);
     this.update();
   },
   unmount() { this.el = null; },
   update() {
     if (!this.el) return;
     const t = ui.today, curW = U.weekKey(t), q = this.q.trim().toLowerCase();
-    const groups = new Map();
+    const groups = new Map(), files = new Map();
+    const isPast = k => U.isWeekKey(k) ? k < curW : U.isDateKey(k) && k < t;
     for (const e of S.entries.values()) {
       const pt = pl(e.t);
-      if (!pt.trim()) continue;
-      const past = U.isWeekKey(e.k) ? e.k < curW : U.isDateKey(e.k) && e.k < t;
-      if (!past) continue;
+      if (!pt.trim() || !isPast(e.k)) continue;
       if (q && !pt.toLowerCase().includes(q) && !keyLabel(e).toLowerCase().includes(q)) continue;
       if (!groups.has(e.k)) groups.set(e.k, []);
       groups.get(e.k).push(e);
     }
-    const keys = [...groups.keys()].sort((a, b) => sortKeyOf({ k: b }).localeCompare(sortKeyOf({ k: a })));
+    for (const f of S.files.values()) {
+      const k = (f.on || '').startsWith('day:') ? f.on.slice(4) : null;
+      if (!k || !isPast(k)) continue;
+      if (q && !f.name.toLowerCase().includes(q) && !dayLabel(k).toLowerCase().includes(q)) continue;
+      files.set(k, (files.get(k) || 0) + 1);
+      if (!groups.has(k)) groups.set(k, []);
+    }
+    const keys = this.keys = [...groups.keys()].sort((a, b) => sortKeyOf({ k: b }).localeCompare(sortKeyOf({ k: a })));
+    $('#arAll').textContent = this.open.size ? 'Close all' : 'Open all';
     let h = '', rows = 0;
     for (const k of keys) {
-      if (rows > 400) break;
       const L = groups.get(k).map(e => ({ e, p: e.lit ? null : U.parseTime(e.t) }))
         .sort((a, b) => (a.p ? 0 : 1) - (b.p ? 0 : 1) || (a.p && b.p ? a.p.start.localeCompare(b.p.start) : (a.e.o || 0) - (b.e.o || 0)));
-      h += `<div class="ar-day">${U.isWeekKey(k) ? `Week ${+k.slice(6)} · general` : dayLabel(k)}</div>`;
+      const open = !!q || this.open.has(k), nf = files.get(k) || 0;
+      const imp = L.some(x => isImp(x.e)) || (U.isDateKey(k) && !!S.days.get(k)?.imp);
+      const first = L[0] ? pl(L[0].p ? `${L[0].p.start} ${L[0].p.text}` : U.firstLine(L[0].e.t)) : '';
+      const label = U.isWeekKey(k) ? `Week ${+k.slice(6)} · general` : dayLabel(k);
+      h += `<button class="ar-dh${open ? ' open' : ''}" data-day="${k}" type="button" aria-expanded="${open}">`
+        + `<span class="chev">${open ? I.down : I.right}</span><span class="ar-dl${imp ? ' red' : ''}">${label}</span>`
+        + `<span class="ar-dp">${open ? '' : esc(first)}</span>`
+        + `<span class="ar-dc">${L.length}${nf ? ` · <span class="ar-clip">${I.clip}</span>${nf}` : ''}</span></button>`;
+      if (!open || rows > 600) continue;
+      h += '<div class="ar-body">';
       for (const { e, p } of L) {
         rows++;
         const act = this.openId === e.id
@@ -1044,8 +1279,9 @@ const Archive = {
           : `<button class="mv" data-mv="${e.id}" type="button">Move</button>`;
         h += `<div class="ar-row" data-id="${e.id}"><i class="c-dot" style="background:${colorOf(e.c)}"></i><span class="ar-t">${p ? p.start : ''}</span><span class="ar-x${e.x ? ' x' : ''}">${rich(p ? p.text : U.firstLine(e.t))}${e.imp ? ' <b class="le-imp">!</b>' : ''}</span>${act}</div>`;
       }
+      if (nf) h += stripHtml('day:' + k);
+      h += '</div>';
     }
-    if (rows > 400) h += '<div class="empty">Showing the latest entries. Search to find older ones.</div>';
     $('#arL').innerHTML = h || (q ? `<div class="empty">No matches for “${esc(this.q)}”</div>` : '<div class="empty">Nothing archived yet. Past days land here automatically.</div>');
   },
 };
@@ -1120,6 +1356,7 @@ function startApp(backend, user) {
   go('days');
   subscribe(() => { PAGES[ui.page].update?.(); updaters.forEach(f => { try { f(); } catch (e) { console.error(e); } }); });
   setInterval(() => tick(), 10000);
+  if (backend.kind !== 'demo') prepareScanner();
   document.addEventListener('visibilitychange', () => { if (!document.hidden) tick(true); });
 }
 

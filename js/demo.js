@@ -19,6 +19,7 @@ export function demoBackend() {
     },
     set(uid, col, id, d) { (data[col] ||= {})[id] = d; save(); },
     del(uid, col, id) { if (data[col]) delete data[col][id]; save(); },
+    async get(uid, col, id) { return data[col]?.[id] || null; },
   };
 }
 
