@@ -736,7 +736,12 @@ const Days = {
   // Drag the line between schedule and notes; the height is remembered on this device.
   splitter() {
     const sched = $('#sched'), split = $('#split'), body = $('#dayBody');
-    const clamp = h => Math.max(70, Math.min(h, body.clientHeight - 130));
+    // schedule + notes share the free space; the notes always keep at least NOTES_MIN
+    const NOTES_MIN = 90;
+    const clamp = h => {
+      const fixed = [...body.children].reduce((a, c) => a + (c === sched || c.id === 'notes' ? 0 : c.offsetHeight), 0);
+      return Math.max(60, Math.min(h, body.clientHeight - fixed - NOTES_MIN - 8));
+    };
     const saved = +localStorage.getItem('dplus-split') || 0;
     if (saved) sched.style.height = clamp(saved) + 'px';
     let y0 = 0, h0 = 0, on = false;
